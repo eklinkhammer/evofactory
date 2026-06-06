@@ -1,8 +1,10 @@
 # Godot
 .godot/
+*.uid
 
 # Rust
 rust/target/
+rust/Cargo.lock
 
 # OS
 .DS_Store
