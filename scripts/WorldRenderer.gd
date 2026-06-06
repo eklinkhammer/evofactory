@@ -61,7 +61,11 @@ func _draw() -> void:
 	if simulation:
 		var player_pos := world_to_screen(simulation.player_x, simulation.player_y)
 		var radius: float = simulation.player_radius
-		var cell_color := Color(0.3, 0.8, 0.4)
-		var outline_color := Color(0.2, 0.6, 0.3)
+		var energy: float = clampf(simulation.player_energy_ratio, 0.0, 1.0)
+		var cell_color := Color(0.8 * (1.0 - energy), 0.8 * energy, 0.2)
+		var outline_color := Color(0.6 * (1.0 - energy), 0.6 * energy, 0.15)
+		if energy < 0.2:
+			cell_color.a = 0.4
+			outline_color.a = 0.4
 		draw_circle(player_pos, radius, cell_color)
 		draw_arc(player_pos, radius, 0, TAU, 32, outline_color, 2.0)

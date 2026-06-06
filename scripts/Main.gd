@@ -7,8 +7,18 @@ func _ready() -> void:
 	simulation.spawn_resources(30)
 
 func _process(delta: float) -> void:
+	# Restart when dead
+	if not simulation.player_alive:
+		if Input.is_key_pressed(KEY_R):
+			simulation.restart()
+		simulation.tick(delta)
+		world_renderer.queue_redraw()
+		return
+
 	# Don't move player when shift is held (shift+arrows = camera pan)
 	if Input.is_key_pressed(KEY_SHIFT):
+		simulation.tick(delta)
+		world_renderer.queue_redraw()
 		return
 
 	var dx := 0.0

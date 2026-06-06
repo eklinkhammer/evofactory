@@ -7,6 +7,16 @@ const SPAWN_BOUND: f32 = 480.0;
 const MIN_RESPAWN_DIST: f32 = 100.0;
 const DRIFT_SPEED: f32 = 5.0;
 
+const MOVEMENT_ATP_COST: f32 = 0.5;
+const SIZE_METABOLISM_FACTOR: f32 = 0.02;
+const GLUCOSE_TO_ATP: f32 = 4.0;
+const STARTING_ATP: f32 = 20.0;
+const MAX_ATP: f32 = 50.0;
+const AMINO_ACID_GROWTH: f32 = 0.5;
+const MIN_RADIUS: f32 = 15.0;
+const MAX_RADIUS: f32 = 40.0;
+const VELOCITY_THRESHOLD: f32 = 5.0;
+
 struct Resource {
     x: f32,
     y: f32,
@@ -43,6 +53,15 @@ pub struct Simulation {
     #[var]
     world_bound: f32,
 
+    #[var]
+    player_atp: f32,
+    #[var]
+    player_max_atp: f32,
+    #[var]
+    player_alive: bool,
+    #[var]
+    player_energy_ratio: f32,
+
     velocity_x: f32,
     velocity_y: f32,
 
@@ -56,7 +75,7 @@ impl INode for Simulation {
             base,
             player_x: 0.0,
             player_y: 0.0,
-            player_radius: 15.0,
+            player_radius: MIN_RADIUS,
             player_glucose: 0.0,
             player_amino_acids: 0.0,
             resource_xs: PackedFloat32Array::new(),
@@ -64,6 +83,10 @@ impl INode for Simulation {
             resource_types: PackedInt32Array::new(),
             resource_radius: RESOURCE_RADIUS,
             world_bound: WORLD_BOUND,
+            player_atp: STARTING_ATP,
+            player_max_atp: MAX_ATP,
+            player_alive: true,
+            player_energy_ratio: STARTING_ATP / MAX_ATP,
             velocity_x: 0.0,
             velocity_y: 0.0,
             resources: Vec::new(),
@@ -132,6 +155,10 @@ impl Simulation {
 
     #[func]
     fn tick(&mut self, delta: f64) {
+        if !self.player_alive {
+            return;
+        }
+
         let dt = delta as f32;
         let damping = 0.9_f32.powf(dt * 60.0);
         let bound = WORLD_BOUND;
@@ -180,8 +207,14 @@ impl Simulation {
             let dist_sq = dx * dx + dy * dy;
             if dist_sq < pickup_dist_sq {
                 match r.resource_type {
-                    0 => self.player_glucose += r.amount,
-                    1 => self.player_amino_acids += r.amount,
+                    0 => {
+                        self.player_glucose += r.amount;
+                        self.player_atp = (self.player_atp + r.amount * GLUCOSE_TO_ATP).min(MAX_ATP);
+                    }
+                    1 => {
+                        self.player_amino_acids += r.amount;
+                        self.player_radius = (MIN_RADIUS + self.player_amino_acids * AMINO_ACID_GROWTH).min(MAX_RADIUS);
+                    }
                     _ => {}
                 }
                 respawn_indices.push(i);
@@ -192,6 +225,41 @@ impl Simulation {
             self.respawn_resource(i);
         }
 
+        // Movement-based metabolism
+        let speed = (self.velocity_x * self.velocity_x + self.velocity_y * self.velocity_y).sqrt();
+        if speed > VELOCITY_THRESHOLD {
+            let cost = MOVEMENT_ATP_COST + (self.player_radius - MIN_RADIUS) * SIZE_METABOLISM_FACTOR;
+            self.player_atp -= cost * dt;
+        }
+
+        // Death check
+        if self.player_atp <= 0.0 {
+            self.player_atp = 0.0;
+            self.player_alive = false;
+        }
+
+        // Update energy ratio
+        self.player_energy_ratio = self.player_atp / self.player_max_atp;
+
+        self.sync_packed_arrays();
+    }
+
+    #[func]
+    fn restart(&mut self) {
+        self.player_x = 0.0;
+        self.player_y = 0.0;
+        self.player_radius = MIN_RADIUS;
+        self.player_atp = STARTING_ATP;
+        self.player_alive = true;
+        self.player_glucose = 0.0;
+        self.player_amino_acids = 0.0;
+        self.velocity_x = 0.0;
+        self.velocity_y = 0.0;
+        self.player_energy_ratio = STARTING_ATP / MAX_ATP;
+
+        for i in 0..self.resources.len() {
+            self.respawn_resource(i);
+        }
         self.sync_packed_arrays();
     }
 }
