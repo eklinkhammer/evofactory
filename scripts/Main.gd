@@ -26,7 +26,11 @@ func _process(delta: float) -> void:
 		dx *= inv_sqrt2
 		dy *= inv_sqrt2
 
-	simulation.move_player(dx, dy)
+	# Transform screen-space input to world-space for dimetric projection
+	var wx := dx * 0.5 + dy
+	var wy := -dx * 0.5 + dy
+
+	simulation.move_player(wx, wy)
 	simulation.tick(delta)
 
 	world_renderer.queue_redraw()
