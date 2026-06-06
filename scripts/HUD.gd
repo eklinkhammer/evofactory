@@ -16,7 +16,8 @@ func _process(_delta: float) -> void:
 			label.text = "GAME OVER - Press R to restart"
 			label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
 		else:
-			label.text = "ATP: %d/%d | Glucose: %d | Amino Acids: %d" % [
+			var prefix := "[Interior] " if simulation.interior_view else ""
+			label.text = prefix + "ATP: %d/%d | Glucose: %d | Amino Acids: %d" % [
 				int(simulation.player_atp),
 				int(simulation.player_max_atp),
 				int(simulation.player_glucose),

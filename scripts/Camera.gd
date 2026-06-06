@@ -5,11 +5,28 @@ var min_zoom := 0.2
 var max_zoom := 3.0
 var pan_speed := 500.0
 var is_panning := false
+var in_interior := false
+var saved_position := Vector2.ZERO
+var saved_zoom := Vector2(0.8, 0.8)
 
 func _ready() -> void:
 	zoom = Vector2(0.8, 0.8)
 
+func enter_interior() -> void:
+	saved_position = position
+	saved_zoom = zoom
+	position = Vector2.ZERO
+	zoom = Vector2(1.5, 1.5)
+	in_interior = true
+
+func exit_interior() -> void:
+	position = saved_position
+	zoom = saved_zoom
+	in_interior = false
+
 func _unhandled_input(event: InputEvent) -> void:
+	if in_interior:
+		return
 	# Zoom with scroll wheel
 	if event is InputEventMouseButton:
 		var mouse_event := event as InputEventMouseButton
@@ -30,6 +47,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		position -= motion.relative / zoom
 
 func _process(delta: float) -> void:
+	if in_interior:
+		return
 	# Pan with shift + arrow keys
 	if Input.is_key_pressed(KEY_SHIFT):
 		var pan_dir := Vector2.ZERO

@@ -2,17 +2,42 @@ extends Node2D
 
 @onready var simulation: Node = $Simulation
 @onready var world_renderer: Node2D = $WorldRenderer
+@onready var interior_renderer: Node2D = $CellInteriorRenderer
+@onready var camera: Camera2D = $Camera
 
 func _ready() -> void:
 	simulation.spawn_resources(30)
 
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
+		if event.keycode == KEY_TAB:
+			simulation.toggle_interior_view()
+			if simulation.interior_view:
+				camera.enter_interior()
+			else:
+				camera.exit_interior()
+
 func _process(delta: float) -> void:
+	# Toggle visibility
+	world_renderer.visible = not simulation.interior_view
+	interior_renderer.visible = simulation.interior_view
+
 	# Restart when dead
 	if not simulation.player_alive:
 		if Input.is_key_pressed(KEY_R):
 			simulation.restart()
+			camera.exit_interior()
 		simulation.tick(delta)
-		world_renderer.queue_redraw()
+		if simulation.interior_view:
+			interior_renderer.queue_redraw()
+		else:
+			world_renderer.queue_redraw()
+		return
+
+	# Skip overworld movement in interior view
+	if simulation.interior_view:
+		simulation.tick(delta)
+		interior_renderer.queue_redraw()
 		return
 
 	# Don't move player when shift is held (shift+arrows = camera pan)

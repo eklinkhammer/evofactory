@@ -16,6 +16,14 @@ const AMINO_ACID_GROWTH: f32 = 0.5;
 const MIN_RADIUS: f32 = 15.0;
 const MAX_RADIUS: f32 = 40.0;
 const VELOCITY_THRESHOLD: f32 = 5.0;
+const INTERIOR_RADIUS: f32 = 200.0;
+const INTERIOR_DRIFT: f32 = 20.0;
+
+struct InteriorParticle {
+    x: f32,
+    y: f32,
+    resource_type: i32,
+}
 
 struct Resource {
     x: f32,
@@ -66,6 +74,18 @@ pub struct Simulation {
     velocity_y: f32,
 
     resources: Vec<Resource>,
+
+    #[var]
+    interior_view: bool,
+    interior_particles: Vec<InteriorParticle>,
+    #[var]
+    interior_xs: PackedFloat32Array,
+    #[var]
+    interior_ys: PackedFloat32Array,
+    #[var]
+    interior_types: PackedInt32Array,
+    #[var]
+    interior_radius: f32,
 }
 
 #[godot_api]
@@ -90,12 +110,35 @@ impl INode for Simulation {
             velocity_x: 0.0,
             velocity_y: 0.0,
             resources: Vec::new(),
+            interior_view: false,
+            interior_particles: Vec::new(),
+            interior_xs: PackedFloat32Array::new(),
+            interior_ys: PackedFloat32Array::new(),
+            interior_types: PackedInt32Array::new(),
+            interior_radius: INTERIOR_RADIUS,
         }
     }
 }
 
 #[godot_api]
 impl Simulation {
+    #[func]
+    fn toggle_interior_view(&mut self) {
+        self.interior_view = !self.interior_view;
+    }
+
+    fn sync_interior_arrays(&mut self) {
+        self.interior_xs = PackedFloat32Array::new();
+        self.interior_ys = PackedFloat32Array::new();
+        self.interior_types = PackedInt32Array::new();
+
+        for p in &self.interior_particles {
+            self.interior_xs.push(p.x);
+            self.interior_ys.push(p.y);
+            self.interior_types.push(p.resource_type);
+        }
+    }
+
     #[func]
     fn move_player(&mut self, dx: f32, dy: f32) {
         let speed = 200.0;
@@ -217,6 +260,14 @@ impl Simulation {
                     }
                     _ => {}
                 }
+                // Spawn interior particle at random position within membrane
+                let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+                let dist = rng.gen_range(0.0..INTERIOR_RADIUS * 0.85);
+                self.interior_particles.push(InteriorParticle {
+                    x: angle.cos() * dist,
+                    y: angle.sin() * dist,
+                    resource_type: r.resource_type,
+                });
                 respawn_indices.push(i);
             }
         }
@@ -241,7 +292,20 @@ impl Simulation {
         // Update energy ratio
         self.player_energy_ratio = self.player_atp / self.player_max_atp;
 
+        // Drift interior particles (Brownian motion)
+        for p in &mut self.interior_particles {
+            p.x += rng.gen_range(-INTERIOR_DRIFT..INTERIOR_DRIFT) * dt;
+            p.y += rng.gen_range(-INTERIOR_DRIFT..INTERIOR_DRIFT) * dt;
+            let dist = (p.x * p.x + p.y * p.y).sqrt();
+            if dist > INTERIOR_RADIUS * 0.9 {
+                let scale = INTERIOR_RADIUS * 0.9 / dist;
+                p.x *= scale;
+                p.y *= scale;
+            }
+        }
+
         self.sync_packed_arrays();
+        self.sync_interior_arrays();
     }
 
     #[func]
@@ -256,10 +320,13 @@ impl Simulation {
         self.velocity_x = 0.0;
         self.velocity_y = 0.0;
         self.player_energy_ratio = STARTING_ATP / MAX_ATP;
+        self.interior_view = false;
+        self.interior_particles.clear();
 
         for i in 0..self.resources.len() {
             self.respawn_resource(i);
         }
         self.sync_packed_arrays();
+        self.sync_interior_arrays();
     }
 }
