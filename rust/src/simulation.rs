@@ -356,6 +356,7 @@ impl Simulation {
                 let dist = (dx * dx + dy * dy).sqrt();
                 if dist < ENZYME_COLLISION_DIST {
                     // Convert this glucose to ATP
+                    self.player_glucose -= 1.0;
                     p.resource_type = 2;
                     // Spawn additional ATP particles based on yield
                     let extra = (FERMENTATION_YIELD as i32) - 1;
