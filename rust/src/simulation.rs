@@ -9,7 +9,7 @@ const DRIFT_SPEED: f32 = 5.0;
 
 const MOVEMENT_ATP_COST: f32 = 0.5;
 const SIZE_METABOLISM_FACTOR: f32 = 0.02;
-const GLUCOSE_TO_ATP: f32 = 4.0;
+const FERMENTATION_YIELD: f32 = 2.0;
 const STARTING_ATP: f32 = 20.0;
 const MAX_ATP: f32 = 50.0;
 const AMINO_ACID_GROWTH: f32 = 0.5;
@@ -18,6 +18,10 @@ const MAX_RADIUS: f32 = 40.0;
 const VELOCITY_THRESHOLD: f32 = 5.0;
 const INTERIOR_RADIUS: f32 = 200.0;
 const INTERIOR_DRIFT: f32 = 20.0;
+const ENZYME_RADIUS: f32 = 15.0;
+const ENZYME_COLLISION_DIST: f32 = 20.0;
+const MOTOR_COLLISION_DIST: f32 = 25.0;
+const MOTOR_ANGLE: f32 = 0.0;
 
 struct InteriorParticle {
     x: f32,
@@ -86,6 +90,27 @@ pub struct Simulation {
     interior_types: PackedInt32Array,
     #[var]
     interior_radius: f32,
+
+    enzyme_x: f32,
+    enzyme_y: f32,
+    motor_charge: f32,
+
+    #[var]
+    enzyme_interior_x: f32,
+    #[var]
+    enzyme_interior_y: f32,
+    #[var]
+    enzyme_interior_radius: f32,
+    #[var]
+    motor_interior_x: f32,
+    #[var]
+    motor_interior_y: f32,
+    #[var]
+    atp_particle_count: i32,
+    #[var]
+    glucose_particle_count: i32,
+    #[var]
+    motor_charge_display: f32,
 }
 
 #[godot_api]
@@ -116,6 +141,19 @@ impl INode for Simulation {
             interior_ys: PackedFloat32Array::new(),
             interior_types: PackedInt32Array::new(),
             interior_radius: INTERIOR_RADIUS,
+
+            enzyme_x: 0.0,
+            enzyme_y: 0.0,
+            motor_charge: STARTING_ATP,
+
+            enzyme_interior_x: 0.0,
+            enzyme_interior_y: 0.0,
+            enzyme_interior_radius: ENZYME_RADIUS,
+            motor_interior_x: MOTOR_ANGLE.cos() * INTERIOR_RADIUS * 0.9,
+            motor_interior_y: MOTOR_ANGLE.sin() * INTERIOR_RADIUS * 0.9,
+            atp_particle_count: 0,
+            glucose_particle_count: 0,
+            motor_charge_display: STARTING_ATP,
         }
     }
 }
@@ -141,6 +179,9 @@ impl Simulation {
 
     #[func]
     fn move_player(&mut self, dx: f32, dy: f32) {
+        if self.motor_charge <= 0.0 {
+            return;
+        }
         let speed = 200.0;
         self.velocity_x += dx * speed;
         self.velocity_y += dy * speed;
@@ -252,7 +293,7 @@ impl Simulation {
                 match r.resource_type {
                     0 => {
                         self.player_glucose += r.amount;
-                        self.player_atp = (self.player_atp + r.amount * GLUCOSE_TO_ATP).min(MAX_ATP);
+                        // ATP conversion now happens when glucose particle hits enzyme
                     }
                     1 => {
                         self.player_amino_acids += r.amount;
@@ -276,21 +317,21 @@ impl Simulation {
             self.respawn_resource(i);
         }
 
-        // Movement-based metabolism
+        // Movement-based metabolism (uses motor_charge)
         let speed = (self.velocity_x * self.velocity_x + self.velocity_y * self.velocity_y).sqrt();
         if speed > VELOCITY_THRESHOLD {
-            let cost = MOVEMENT_ATP_COST + (self.player_radius - MIN_RADIUS) * SIZE_METABOLISM_FACTOR;
-            self.player_atp -= cost * dt;
+            if self.motor_charge > 0.0 {
+                let cost = MOVEMENT_ATP_COST + (self.player_radius - MIN_RADIUS) * SIZE_METABOLISM_FACTOR;
+                self.motor_charge -= cost * dt;
+                if self.motor_charge < 0.0 {
+                    self.motor_charge = 0.0;
+                }
+            } else {
+                // No motor charge — dampen velocity (lose propulsion)
+                self.velocity_x *= 0.95_f32.powf(dt * 60.0);
+                self.velocity_y *= 0.95_f32.powf(dt * 60.0);
+            }
         }
-
-        // Death check
-        if self.player_atp <= 0.0 {
-            self.player_atp = 0.0;
-            self.player_alive = false;
-        }
-
-        // Update energy ratio
-        self.player_energy_ratio = self.player_atp / self.player_max_atp;
 
         // Drift interior particles (Brownian motion)
         for p in &mut self.interior_particles {
@@ -304,6 +345,75 @@ impl Simulation {
             }
         }
 
+        // Enzyme collision: glucose particles hitting the enzyme produce ATP
+        let enzyme_x = self.enzyme_x;
+        let enzyme_y = self.enzyme_y;
+        let mut new_atp_particles: Vec<InteriorParticle> = Vec::new();
+        for p in &mut self.interior_particles {
+            if p.resource_type == 0 {
+                let dx = p.x - enzyme_x;
+                let dy = p.y - enzyme_y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist < ENZYME_COLLISION_DIST {
+                    // Convert this glucose to ATP
+                    p.resource_type = 2;
+                    // Spawn additional ATP particles based on yield
+                    let extra = (FERMENTATION_YIELD as i32) - 1;
+                    for _ in 0..extra {
+                        new_atp_particles.push(InteriorParticle {
+                            x: p.x + rng.gen_range(-5.0..5.0),
+                            y: p.y + rng.gen_range(-5.0..5.0),
+                            resource_type: 2,
+                        });
+                    }
+                }
+            }
+        }
+        self.interior_particles.extend(new_atp_particles);
+
+        // Membrane motor: ATP particles hitting the motor become motor_charge
+        let motor_x = MOTOR_ANGLE.cos() * INTERIOR_RADIUS * 0.9;
+        let motor_y = MOTOR_ANGLE.sin() * INTERIOR_RADIUS * 0.9;
+        let mut i = 0;
+        while i < self.interior_particles.len() {
+            let p = &self.interior_particles[i];
+            if p.resource_type == 2 {
+                let dx = p.x - motor_x;
+                let dy = p.y - motor_y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist < MOTOR_COLLISION_DIST {
+                    self.interior_particles.swap_remove(i);
+                    self.motor_charge = (self.motor_charge + 1.0).min(MAX_ATP);
+                    continue;
+                }
+            }
+            i += 1;
+        }
+
+        // Count particles for HUD
+        let mut atp_count = 0;
+        let mut glucose_count = 0;
+        for p in &self.interior_particles {
+            match p.resource_type {
+                0 => glucose_count += 1,
+                2 => atp_count += 1,
+                _ => {}
+            }
+        }
+        self.atp_particle_count = atp_count;
+        self.glucose_particle_count = glucose_count;
+
+        // Death check: fully depleted when no motor charge AND no ATP/glucose particles
+        if self.motor_charge <= 0.0 && atp_count == 0 && glucose_count == 0 {
+            self.motor_charge = 0.0;
+            self.player_alive = false;
+        }
+
+        // Backward-compatible energy ratio for WorldRenderer cell color
+        self.player_atp = self.motor_charge;
+        self.player_energy_ratio = self.motor_charge / self.player_max_atp;
+        self.motor_charge_display = self.motor_charge;
+
         self.sync_packed_arrays();
         self.sync_interior_arrays();
     }
@@ -313,6 +423,7 @@ impl Simulation {
         self.player_x = 0.0;
         self.player_y = 0.0;
         self.player_radius = MIN_RADIUS;
+        self.motor_charge = STARTING_ATP;
         self.player_atp = STARTING_ATP;
         self.player_alive = true;
         self.player_glucose = 0.0;
@@ -320,6 +431,9 @@ impl Simulation {
         self.velocity_x = 0.0;
         self.velocity_y = 0.0;
         self.player_energy_ratio = STARTING_ATP / MAX_ATP;
+        self.motor_charge_display = STARTING_ATP;
+        self.atp_particle_count = 0;
+        self.glucose_particle_count = 0;
         self.interior_view = false;
         self.interior_particles.clear();
 

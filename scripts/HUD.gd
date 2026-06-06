@@ -17,9 +17,10 @@ func _process(_delta: float) -> void:
 			label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
 		else:
 			var prefix := "[Interior] " if simulation.interior_view else ""
-			label.text = prefix + "ATP: %d/%d | Glucose: %d | Amino Acids: %d" % [
-				int(simulation.player_atp),
+			label.text = prefix + "Motor: %d/%d | Free ATP: %d | Glucose: %d | Amino: %d" % [
+				int(simulation.motor_charge_display),
 				int(simulation.player_max_atp),
+				simulation.atp_particle_count,
 				int(simulation.player_glucose),
 				int(simulation.player_amino_acids),
 			]
