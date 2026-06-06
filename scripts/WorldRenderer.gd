@@ -7,7 +7,7 @@ func world_to_screen(wx: float, wy: float) -> Vector2:
 
 func _draw() -> void:
 	# World boundary diamond (square world projected to dimetric)
-	var bound := 500.0
+	var bound: float = simulation.world_bound
 	var corners: Array[Vector2] = [
 		world_to_screen(bound, bound),    # top
 		world_to_screen(bound, -bound),   # right
@@ -41,6 +41,21 @@ func _draw() -> void:
 	var border_color := Color(0.4, 0.55, 0.4)
 	for i in range(4):
 		draw_line(corners[i], corners[(i + 1) % 4], border_color, 2.0)
+
+	# Resources
+	if simulation:
+		var rxs: PackedFloat32Array = simulation.resource_xs
+		var rys: PackedFloat32Array = simulation.resource_ys
+		var rtypes: PackedInt32Array = simulation.resource_types
+		var glucose_color := Color(0.95, 0.75, 0.2)
+		var amino_color := Color(0.5, 0.3, 0.85)
+		var r_radius: float = simulation.resource_radius
+		for i in range(rxs.size()):
+			var pos := world_to_screen(rxs[i], rys[i])
+			if rtypes[i] == 0:
+				draw_circle(pos, r_radius, glucose_color)
+			else:
+				draw_circle(pos, r_radius, amino_color)
 
 	# Player cell
 	if simulation:
