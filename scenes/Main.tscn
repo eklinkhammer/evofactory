@@ -15,7 +15,6 @@ script = ExtResource("1")
 script = ExtResource("2")
 
 [node name="CellInteriorRenderer" type="Node2D" parent="."]
-visible = false
 script = ExtResource("5")
 
 [node name="Camera" type="Camera2D" parent="."]

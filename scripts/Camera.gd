@@ -15,8 +15,9 @@ func _ready() -> void:
 func enter_interior() -> void:
 	saved_position = position
 	saved_zoom = zoom
-	position = Vector2.ZERO
-	zoom = Vector2(1.5, 1.5)
+	# Position is set each frame by Main.gd to track the player
+	# Zoom in enough that the scaled-down interior is readable
+	zoom = Vector2(20.0, 20.0)
 	in_interior = true
 
 func exit_interior() -> void:
@@ -48,7 +49,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 func _process(delta: float) -> void:
 	if in_interior:
-		return
+		return  # Position updated by Main.gd each frame
 	# Pan with shift + arrow keys
 	if Input.is_key_pressed(KEY_SHIFT):
 		var pan_dir := Vector2.ZERO

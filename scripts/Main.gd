@@ -21,6 +21,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			if simulation.interior_view:
 				camera.enter_interior()
 			else:
+				interior_renderer.scale = Vector2.ONE
 				camera.exit_interior()
 
 	# Drag-and-drop mouse input (interior view only)
@@ -42,9 +43,18 @@ func _unhandled_input(event: InputEvent) -> void:
 		simulation.drag_particle(local_pos.x, local_pos.y)
 
 func _process(delta: float) -> void:
-	# Toggle visibility
-	world_renderer.visible = not simulation.interior_view
+	# World always visible; interior only when in interior view
+	world_renderer.visible = true
 	interior_renderer.visible = simulation.interior_view
+
+	# Position and scale interior overlay to match cell in world space
+	if simulation.interior_view:
+		var player_screen: Vector2 = world_renderer.world_to_screen(simulation.player_x, simulation.player_y)
+		interior_renderer.position = player_screen
+		camera.position = player_screen
+		# Scale interior to fit inside the cell's world-space circle
+		var s: float = simulation.player_radius / simulation.interior_radius
+		interior_renderer.scale = Vector2(s, s)
 
 	# Restart when dead
 	if not simulation.player_alive:
@@ -53,10 +63,9 @@ func _process(delta: float) -> void:
 			camera.exit_interior()
 			dragging = false
 		simulation.tick(delta)
+		world_renderer.queue_redraw()
 		if simulation.interior_view:
 			interior_renderer.queue_redraw()
-		else:
-			world_renderer.queue_redraw()
 		return
 
 	# Don't move player when shift is held (shift+arrows = camera pan)
@@ -92,7 +101,7 @@ func _process(delta: float) -> void:
 
 	simulation.tick(delta)
 
+	# Always redraw world; redraw interior when active
+	world_renderer.queue_redraw()
 	if simulation.interior_view:
 		interior_renderer.queue_redraw()
-	else:
-		world_renderer.queue_redraw()

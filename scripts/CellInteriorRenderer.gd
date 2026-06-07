@@ -4,11 +4,17 @@ extends Node2D
 
 var hovered_index: int = -1
 
+func _ready() -> void:
+	z_index = 1
+
 func _draw() -> void:
 	if not simulation or not simulation.interior_view:
 		return
 
 	var radius: float = simulation.interior_radius
+
+	# Dark backdrop so interior is readable against the world
+	draw_circle(Vector2.ZERO, radius + 10.0, Color(0.0, 0.0, 0.0, 0.7))
 
 	# Membrane fill
 	draw_circle(Vector2.ZERO, radius, Color(0.08, 0.15, 0.08))
@@ -31,7 +37,7 @@ func _draw() -> void:
 	var motor_pos := Vector2(simulation.motor_interior_x, simulation.motor_interior_y)
 
 	# Drop target highlight: motor glows orange when dragging ATP
-	if simulation.drag_active and simulation.dragged_particle_type == 2:
+	if simulation.drag_active and simulation.dragged_particle_type == 2 and simulation.motor_charge_display < simulation.player_max_atp:
 		draw_circle(motor_pos, 14.0, Color(1.0, 0.7, 0.2, 0.3))
 		draw_arc(motor_pos, 14.0, 0, TAU, 16, Color(1.0, 0.8, 0.3, 0.8), 2.0)
 
