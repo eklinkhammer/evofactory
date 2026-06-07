@@ -22,6 +22,13 @@ const ENZYME_RADIUS: f32 = 15.0;
 const ENZYME_COLLISION_DIST: f32 = 20.0;
 const MOTOR_COLLISION_DIST: f32 = 25.0;
 const MOTOR_ANGLE: f32 = 0.0;
+const MRNA_COUNT: usize = 3;
+const MRNA_DIST: f32 = 70.0;
+const MRNA_ANGLES: [f32; MRNA_COUNT] = [
+    150.0 * std::f32::consts::PI / 180.0,  // enzyme — upper-left
+    270.0 * std::f32::consts::PI / 180.0,  // motor  — bottom
+    30.0 * std::f32::consts::PI / 180.0,   // membrane — upper-right
+];
 
 struct InteriorParticle {
     x: f32,
@@ -111,6 +118,12 @@ pub struct Simulation {
     glucose_particle_count: i32,
     #[var]
     motor_charge_display: f32,
+    #[var]
+    mrna_xs: PackedFloat32Array,
+    #[var]
+    mrna_ys: PackedFloat32Array,
+    #[var]
+    mrna_types: PackedInt32Array,
 }
 
 #[godot_api]
@@ -154,6 +167,9 @@ impl INode for Simulation {
             atp_particle_count: 0,
             glucose_particle_count: 0,
             motor_charge_display: STARTING_ATP,
+            mrna_xs: PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.cos() * MRNA_DIST)[..]),
+            mrna_ys: PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]),
+            mrna_types: PackedInt32Array::from(&[0i32, 1, 2][..]),
         }
     }
 }
@@ -437,6 +453,9 @@ impl Simulation {
         self.glucose_particle_count = 0;
         self.interior_view = false;
         self.interior_particles.clear();
+        self.mrna_xs = PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.cos() * MRNA_DIST)[..]);
+        self.mrna_ys = PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]);
+        self.mrna_types = PackedInt32Array::from(&[0i32, 1, 2][..]);
 
         for i in 0..self.resources.len() {
             self.respawn_resource(i);
