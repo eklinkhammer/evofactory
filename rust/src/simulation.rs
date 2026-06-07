@@ -10,14 +10,14 @@ const DRIFT_SPEED: f32 = 5.0;
 const MOVEMENT_ATP_COST: f32 = 0.5;
 const SIZE_METABOLISM_FACTOR: f32 = 0.02;
 const FERMENTATION_YIELD: f32 = 2.0;
-const STARTING_ATP: f32 = 20.0;
-const MAX_ATP: f32 = 50.0;
+const STARTING_ATP: f32 = 5.0;
+const MAX_ATP: f32 = 5.0;
+const PICK_RADIUS: f32 = 18.0;
 const AMINO_ACID_GROWTH: f32 = 0.5;
 const MIN_RADIUS: f32 = 15.0;
 const MAX_RADIUS: f32 = 40.0;
 const VELOCITY_THRESHOLD: f32 = 5.0;
 const INTERIOR_RADIUS: f32 = 200.0;
-const INTERIOR_DRIFT: f32 = 20.0;
 const ENZYME_RADIUS: f32 = 15.0;
 const ENZYME_COLLISION_DIST: f32 = 20.0;
 const MOTOR_COLLISION_DIST: f32 = 25.0;
@@ -124,6 +124,16 @@ pub struct Simulation {
     mrna_ys: PackedFloat32Array,
     #[var]
     mrna_types: PackedInt32Array,
+
+    dragged_particle_index: Option<usize>,
+    #[var]
+    dragged_particle_x: f32,
+    #[var]
+    dragged_particle_y: f32,
+    #[var]
+    drag_active: bool,
+    #[var]
+    dragged_particle_type: i32,
 }
 
 #[godot_api]
@@ -170,6 +180,12 @@ impl INode for Simulation {
             mrna_xs: PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.cos() * MRNA_DIST)[..]),
             mrna_ys: PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]),
             mrna_types: PackedInt32Array::from(&[0i32, 1, 2][..]),
+
+            dragged_particle_index: None,
+            dragged_particle_x: 0.0,
+            dragged_particle_y: 0.0,
+            drag_active: false,
+            dragged_particle_type: -1,
         }
     }
 }
@@ -309,22 +325,22 @@ impl Simulation {
                 match r.resource_type {
                     0 => {
                         self.player_glucose += r.amount;
-                        // ATP conversion now happens when glucose particle hits enzyme
+                        // Spawn interior glucose particle at random position
+                        let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+                        let dist = rng.gen_range(0.0..INTERIOR_RADIUS * 0.85);
+                        self.interior_particles.push(InteriorParticle {
+                            x: angle.cos() * dist,
+                            y: angle.sin() * dist,
+                            resource_type: 0,
+                        });
                     }
                     1 => {
+                        // Amino acids auto-process: growth applies on pickup, no interior particle
                         self.player_amino_acids += r.amount;
                         self.player_radius = (MIN_RADIUS + self.player_amino_acids * AMINO_ACID_GROWTH).min(MAX_RADIUS);
                     }
                     _ => {}
                 }
-                // Spawn interior particle at random position within membrane
-                let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-                let dist = rng.gen_range(0.0..INTERIOR_RADIUS * 0.85);
-                self.interior_particles.push(InteriorParticle {
-                    x: angle.cos() * dist,
-                    y: angle.sin() * dist,
-                    resource_type: r.resource_type,
-                });
                 respawn_indices.push(i);
             }
         }
@@ -349,62 +365,12 @@ impl Simulation {
             }
         }
 
-        // Drift interior particles (Brownian motion)
-        for p in &mut self.interior_particles {
-            p.x += rng.gen_range(-INTERIOR_DRIFT..INTERIOR_DRIFT) * dt;
-            p.y += rng.gen_range(-INTERIOR_DRIFT..INTERIOR_DRIFT) * dt;
-            let dist = (p.x * p.x + p.y * p.y).sqrt();
-            if dist > INTERIOR_RADIUS * 0.9 {
-                let scale = INTERIOR_RADIUS * 0.9 / dist;
-                p.x *= scale;
-                p.y *= scale;
+        // Sync dragged particle position from GDScript each frame
+        if let Some(idx) = self.dragged_particle_index {
+            if idx < self.interior_particles.len() {
+                self.interior_particles[idx].x = self.dragged_particle_x;
+                self.interior_particles[idx].y = self.dragged_particle_y;
             }
-        }
-
-        // Enzyme collision: glucose particles hitting the enzyme produce ATP
-        let enzyme_x = self.enzyme_x;
-        let enzyme_y = self.enzyme_y;
-        let mut new_atp_particles: Vec<InteriorParticle> = Vec::new();
-        for p in &mut self.interior_particles {
-            if p.resource_type == 0 {
-                let dx = p.x - enzyme_x;
-                let dy = p.y - enzyme_y;
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist < ENZYME_COLLISION_DIST {
-                    // Convert this glucose to ATP
-                    self.player_glucose -= 1.0;
-                    p.resource_type = 2;
-                    // Spawn additional ATP particles based on yield
-                    let extra = (FERMENTATION_YIELD as i32) - 1;
-                    for _ in 0..extra {
-                        new_atp_particles.push(InteriorParticle {
-                            x: p.x + rng.gen_range(-5.0..5.0),
-                            y: p.y + rng.gen_range(-5.0..5.0),
-                            resource_type: 2,
-                        });
-                    }
-                }
-            }
-        }
-        self.interior_particles.extend(new_atp_particles);
-
-        // Membrane motor: ATP particles hitting the motor become motor_charge
-        let motor_x = MOTOR_ANGLE.cos() * INTERIOR_RADIUS * 0.9;
-        let motor_y = MOTOR_ANGLE.sin() * INTERIOR_RADIUS * 0.9;
-        let mut i = 0;
-        while i < self.interior_particles.len() {
-            let p = &self.interior_particles[i];
-            if p.resource_type == 2 {
-                let dx = p.x - motor_x;
-                let dy = p.y - motor_y;
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist < MOTOR_COLLISION_DIST {
-                    self.interior_particles.swap_remove(i);
-                    self.motor_charge = (self.motor_charge + 1.0).min(MAX_ATP);
-                    continue;
-                }
-            }
-            i += 1;
         }
 
         // Count particles for HUD
@@ -436,6 +402,134 @@ impl Simulation {
     }
 
     #[func]
+    fn try_pick_particle(&mut self, x: f32, y: f32) -> bool {
+        let mut best_idx: Option<usize> = None;
+        let mut best_dist = PICK_RADIUS;
+        for (i, p) in self.interior_particles.iter().enumerate() {
+            // Only glucose (0) and ATP (2) are draggable
+            if p.resource_type != 0 && p.resource_type != 2 {
+                continue;
+            }
+            let dx = p.x - x;
+            let dy = p.y - y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist < best_dist {
+                best_dist = dist;
+                best_idx = Some(i);
+            }
+        }
+        if let Some(idx) = best_idx {
+            self.dragged_particle_index = Some(idx);
+            self.dragged_particle_x = self.interior_particles[idx].x;
+            self.dragged_particle_y = self.interior_particles[idx].y;
+            self.drag_active = true;
+            self.dragged_particle_type = self.interior_particles[idx].resource_type;
+            true
+        } else {
+            false
+        }
+    }
+
+    #[func]
+    fn drag_particle(&mut self, x: f32, y: f32) {
+        if self.dragged_particle_index.is_none() {
+            return;
+        }
+        // Clamp to membrane interior
+        let dist = (x * x + y * y).sqrt();
+        let max_r = INTERIOR_RADIUS * 0.9;
+        if dist > max_r {
+            let scale = max_r / dist;
+            self.dragged_particle_x = x * scale;
+            self.dragged_particle_y = y * scale;
+        } else {
+            self.dragged_particle_x = x;
+            self.dragged_particle_y = y;
+        }
+    }
+
+    #[func]
+    fn drop_particle(&mut self, x: f32, y: f32) {
+        let idx = match self.dragged_particle_index {
+            Some(i) => i,
+            None => return,
+        };
+        if idx >= self.interior_particles.len() {
+            self.dragged_particle_index = None;
+            self.drag_active = false;
+            self.dragged_particle_type = -1;
+            return;
+        }
+
+        let p_type = self.interior_particles[idx].resource_type;
+        let mut rng = rand::thread_rng();
+
+        // Check drop targets
+        if p_type == 0 {
+            // Glucose on enzyme?
+            let dx = x - self.enzyme_x;
+            let dy = y - self.enzyme_y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist < ENZYME_COLLISION_DIST {
+                // Convert glucose → ATP
+                self.player_glucose -= 1.0;
+                self.interior_particles[idx].resource_type = 2;
+                // Spawn extra ATP particles for fermentation yield
+                let extra = (FERMENTATION_YIELD as i32) - 1;
+                for _ in 0..extra {
+                    self.interior_particles.push(InteriorParticle {
+                        x: self.enzyme_x + rng.gen_range(-10.0..10.0),
+                        y: self.enzyme_y + rng.gen_range(-10.0..10.0),
+                        resource_type: 2,
+                    });
+                }
+            }
+        } else if p_type == 2 {
+            // ATP on motor?
+            let motor_x = MOTOR_ANGLE.cos() * INTERIOR_RADIUS * 0.9;
+            let motor_y = MOTOR_ANGLE.sin() * INTERIOR_RADIUS * 0.9;
+            let dx = x - motor_x;
+            let dy = y - motor_y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist < MOTOR_COLLISION_DIST && self.motor_charge < MAX_ATP {
+                self.interior_particles.swap_remove(idx);
+                self.motor_charge = (self.motor_charge + 1.0).min(MAX_ATP);
+            }
+        }
+
+        // Clear drag state
+        self.dragged_particle_index = None;
+        self.drag_active = false;
+        self.dragged_particle_type = -1;
+    }
+
+    #[func]
+    fn get_nearest_particle_index(&self, x: f32, y: f32) -> i32 {
+        let mut best_idx: i32 = -1;
+        let mut best_dist = PICK_RADIUS;
+        for (i, p) in self.interior_particles.iter().enumerate() {
+            if p.resource_type != 0 && p.resource_type != 2 {
+                continue;
+            }
+            let dx = p.x - x;
+            let dy = p.y - y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist < best_dist {
+                best_dist = dist;
+                best_idx = i as i32;
+            }
+        }
+        best_idx
+    }
+
+    #[func]
+    fn cancel_drag(&mut self) {
+        self.dragged_particle_index = None;
+        self.drag_active = false;
+        self.dragged_particle_type = -1;
+    }
+
+    #[func]
     fn restart(&mut self) {
         self.player_x = 0.0;
         self.player_y = 0.0;
@@ -453,6 +547,11 @@ impl Simulation {
         self.glucose_particle_count = 0;
         self.interior_view = false;
         self.interior_particles.clear();
+        self.dragged_particle_index = None;
+        self.dragged_particle_x = 0.0;
+        self.dragged_particle_y = 0.0;
+        self.drag_active = false;
+        self.dragged_particle_type = -1;
         self.mrna_xs = PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.cos() * MRNA_DIST)[..]);
         self.mrna_ys = PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]);
         self.mrna_types = PackedInt32Array::from(&[0i32, 1, 2][..]);

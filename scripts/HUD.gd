@@ -16,14 +16,20 @@ func _process(_delta: float) -> void:
 			label.text = "GAME OVER - Press R to restart"
 			label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
 		else:
-			var prefix := "[Interior] " if simulation.interior_view else ""
-			label.text = prefix + "Motor: %d/%d | Free ATP: %d | Glucose: %d | Amino: %d" % [
-				int(simulation.motor_charge_display),
-				int(simulation.player_max_atp),
-				simulation.atp_particle_count,
-				int(simulation.player_glucose),
-				int(simulation.player_amino_acids),
-			]
+			if simulation.interior_view:
+				label.text = "Motor: %d/%d | ATP: %d | Glucose: %d\nDrag glucose→enzyme, ATP→motor" % [
+					int(simulation.motor_charge_display),
+					int(simulation.player_max_atp),
+					simulation.atp_particle_count,
+					int(simulation.player_glucose),
+				]
+			else:
+				label.text = "Motor: %d/%d | Free ATP: %d | Glucose: %d" % [
+					int(simulation.motor_charge_display),
+					int(simulation.player_max_atp),
+					simulation.atp_particle_count,
+					int(simulation.player_glucose),
+				]
 			if simulation.player_energy_ratio < 0.3:
 				label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
 			else:
