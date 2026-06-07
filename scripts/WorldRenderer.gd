@@ -70,11 +70,12 @@ func _draw() -> void:
 		draw_circle(player_pos, radius, cell_color)
 		draw_arc(player_pos, radius, 0, TAU, 32, outline_color, 2.0)
 
-		# Motor indicator on membrane
-		var motor_angle: float = atan2(simulation.motor_interior_y, simulation.motor_interior_x)
-		var motor_screen_pos := player_pos + Vector2(cos(motor_angle), sin(motor_angle)) * radius
-		var charge_ratio: float = simulation.motor_charge_display / simulation.player_max_atp
-		var motor_color := Color(1.0, 0.6, 0.2)
-		draw_circle(motor_screen_pos, 4.0, motor_color)
-		if charge_ratio > 0.0:
-			draw_arc(motor_screen_pos, 6.0, 0, TAU * charge_ratio, 12, Color(1.0, 0.8, 0.3), 2.0)
+		# Motor indicator on membrane (exterior LOD only)
+		if not simulation.interior_view:
+			var motor_angle: float = atan2(simulation.motor_interior_y, simulation.motor_interior_x)
+			var motor_screen_pos := player_pos + Vector2(cos(motor_angle), sin(motor_angle)) * radius
+			var charge_ratio: float = simulation.motor_charge_display / simulation.player_max_atp
+			var motor_color := Color(1.0, 0.6, 0.2)
+			draw_circle(motor_screen_pos, 4.0, motor_color)
+			if charge_ratio > 0.0:
+				draw_arc(motor_screen_pos, 6.0, 0, TAU * charge_ratio, 12, Color(1.0, 0.8, 0.3), 2.0)
