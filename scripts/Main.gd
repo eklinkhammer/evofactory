@@ -8,7 +8,7 @@ extends Node2D
 var dragging := false
 
 func _ready() -> void:
-	simulation.spawn_resources(30)
+	simulation.spawn_resources(60)
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:

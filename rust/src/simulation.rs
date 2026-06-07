@@ -24,6 +24,7 @@ const MRNA_COUNT: usize = 3;
 const MRNA_DIST: f32 = 70.0;
 const MRNA_COLLISION_DIST: f32 = 20.0;
 const MRNA_REQUIRED: [i32; MRNA_COUNT] = [8, 7, 5];
+const GLUCOSE_MIN_SEP: f32 = 12.0;
 const MRNA_ANGLES: [f32; MRNA_COUNT] = [
     150.0 * std::f32::consts::PI / 180.0,  // enzyme — upper-left
     270.0 * std::f32::consts::PI / 180.0,  // motor  — bottom
@@ -227,7 +228,7 @@ impl Simulation {
         if self.motor_charge <= 0.0 {
             return;
         }
-        let speed = 200.0;
+        let speed = 100.0;
         self.velocity_x += dx * speed;
         self.velocity_y += dy * speed;
     }
@@ -335,26 +336,52 @@ impl Simulation {
             let dy = self.player_y - r.y;
             let dist_sq = dx * dx + dy * dy;
             if dist_sq < pickup_dist_sq {
+                // Compute entry point on membrane from resource direction
+                let dir_x = r.x - self.player_x;
+                let dir_y = r.y - self.player_y;
+                let dir_len = (dir_x * dir_x + dir_y * dir_y).sqrt();
+                let (entry_x, entry_y) = if dir_len > 0.001 {
+                    let nx = dir_x / dir_len;
+                    let ny = dir_y / dir_len;
+                    (nx * INTERIOR_RADIUS * 0.85, ny * INTERIOR_RADIUS * 0.85)
+                } else {
+                    let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+                    (angle.cos() * INTERIOR_RADIUS * 0.85, angle.sin() * INTERIOR_RADIUS * 0.85)
+                };
+
                 match r.resource_type {
                     0 => {
                         self.player_glucose += r.amount;
-                        // Spawn interior glucose particle at random position
-                        let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-                        let dist = rng.gen_range(0.0..INTERIOR_RADIUS * 0.85);
+                        // Push existing glucose away from entry point
+                        for p in self.interior_particles.iter_mut() {
+                            if p.resource_type != 0 { continue; }
+                            let dx = p.x - entry_x;
+                            let dy = p.y - entry_y;
+                            let d = (dx * dx + dy * dy).sqrt();
+                            if d < GLUCOSE_MIN_SEP {
+                                if d < 0.001 {
+                                    let a = rng.gen_range(0.0..std::f32::consts::TAU);
+                                    p.x = entry_x + a.cos() * GLUCOSE_MIN_SEP;
+                                    p.y = entry_y + a.sin() * GLUCOSE_MIN_SEP;
+                                } else {
+                                    let nx = dx / d;
+                                    let ny = dy / d;
+                                    p.x = entry_x + nx * GLUCOSE_MIN_SEP;
+                                    p.y = entry_y + ny * GLUCOSE_MIN_SEP;
+                                }
+                            }
+                        }
                         self.interior_particles.push(InteriorParticle {
-                            x: angle.cos() * dist,
-                            y: angle.sin() * dist,
+                            x: entry_x,
+                            y: entry_y,
                             resource_type: 0,
                         });
                     }
                     1 => {
                         self.player_amino_acids += r.amount;
-                        // Spawn interior particle (like glucose)
-                        let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-                        let dist = rng.gen_range(0.0..INTERIOR_RADIUS * 0.85);
                         self.interior_particles.push(InteriorParticle {
-                            x: angle.cos() * dist,
-                            y: angle.sin() * dist,
+                            x: entry_x,
+                            y: entry_y,
                             resource_type: 1,
                         });
                     }
@@ -389,6 +416,34 @@ impl Simulation {
             if idx < self.interior_particles.len() {
                 self.interior_particles[idx].x = self.dragged_particle_x;
                 self.interior_particles[idx].y = self.dragged_particle_y;
+            }
+        }
+
+        // Pairwise glucose separation
+        let n = self.interior_particles.len();
+        for i in 0..n {
+            if self.interior_particles[i].resource_type != 0 { continue; }
+            for j in (i + 1)..n {
+                if self.interior_particles[j].resource_type != 0 { continue; }
+                let dx = self.interior_particles[j].x - self.interior_particles[i].x;
+                let dy = self.interior_particles[j].y - self.interior_particles[i].y;
+                let d = (dx * dx + dy * dy).sqrt();
+                if d < GLUCOSE_MIN_SEP && d > 0.001 {
+                    let overlap = (GLUCOSE_MIN_SEP - d) * 0.5;
+                    let nx = dx / d;
+                    let ny = dy / d;
+                    self.interior_particles[i].x -= nx * overlap;
+                    self.interior_particles[i].y -= ny * overlap;
+                    self.interior_particles[j].x += nx * overlap;
+                    self.interior_particles[j].y += ny * overlap;
+                } else if d <= 0.001 {
+                    let a = rng.gen_range(0.0..std::f32::consts::TAU);
+                    let half = GLUCOSE_MIN_SEP * 0.5;
+                    self.interior_particles[i].x -= a.cos() * half;
+                    self.interior_particles[i].y -= a.sin() * half;
+                    self.interior_particles[j].x += a.cos() * half;
+                    self.interior_particles[j].y += a.sin() * half;
+                }
             }
         }
 
