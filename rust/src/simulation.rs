@@ -13,9 +13,7 @@ const FERMENTATION_YIELD: f32 = 2.0;
 const STARTING_ATP: f32 = 5.0;
 const MAX_ATP: f32 = 5.0;
 const PICK_RADIUS: f32 = 18.0;
-const AMINO_ACID_GROWTH: f32 = 0.5;
 const MIN_RADIUS: f32 = 15.0;
-const MAX_RADIUS: f32 = 40.0;
 const VELOCITY_THRESHOLD: f32 = 5.0;
 const INTERIOR_RADIUS: f32 = 200.0;
 const ENZYME_RADIUS: f32 = 15.0;
@@ -24,6 +22,8 @@ const MOTOR_COLLISION_DIST: f32 = 25.0;
 const MOTOR_ANGLE: f32 = 0.0;
 const MRNA_COUNT: usize = 3;
 const MRNA_DIST: f32 = 70.0;
+const MRNA_COLLISION_DIST: f32 = 20.0;
+const MRNA_REQUIRED: [i32; MRNA_COUNT] = [8, 7, 5];
 const MRNA_ANGLES: [f32; MRNA_COUNT] = [
     150.0 * std::f32::consts::PI / 180.0,  // enzyme — upper-left
     270.0 * std::f32::consts::PI / 180.0,  // motor  — bottom
@@ -125,6 +125,14 @@ pub struct Simulation {
     #[var]
     mrna_types: PackedInt32Array,
 
+    mrna_progress_internal: [i32; MRNA_COUNT],
+    #[var]
+    mrna_progress: PackedInt32Array,
+    #[var]
+    mrna_required: PackedInt32Array,
+    #[var]
+    amino_acid_particle_count: i32,
+
     dragged_particle_index: Option<usize>,
     #[var]
     dragged_particle_x: f32,
@@ -180,6 +188,11 @@ impl INode for Simulation {
             mrna_xs: PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.cos() * MRNA_DIST)[..]),
             mrna_ys: PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]),
             mrna_types: PackedInt32Array::from(&[0i32, 1, 2][..]),
+
+            mrna_progress_internal: [0; MRNA_COUNT],
+            mrna_progress: PackedInt32Array::from(&[0i32; MRNA_COUNT][..]),
+            mrna_required: PackedInt32Array::from(&MRNA_REQUIRED[..]),
+            amino_acid_particle_count: 0,
 
             dragged_particle_index: None,
             dragged_particle_x: 0.0,
@@ -335,9 +348,15 @@ impl Simulation {
                         });
                     }
                     1 => {
-                        // Amino acids auto-process: growth applies on pickup, no interior particle
                         self.player_amino_acids += r.amount;
-                        self.player_radius = (MIN_RADIUS + self.player_amino_acids * AMINO_ACID_GROWTH).min(MAX_RADIUS);
+                        // Spawn interior particle (like glucose)
+                        let angle = rng.gen_range(0.0..std::f32::consts::TAU);
+                        let dist = rng.gen_range(0.0..INTERIOR_RADIUS * 0.85);
+                        self.interior_particles.push(InteriorParticle {
+                            x: angle.cos() * dist,
+                            y: angle.sin() * dist,
+                            resource_type: 1,
+                        });
                     }
                     _ => {}
                 }
@@ -376,15 +395,18 @@ impl Simulation {
         // Count particles for HUD
         let mut atp_count = 0;
         let mut glucose_count = 0;
+        let mut amino_count = 0;
         for p in &self.interior_particles {
             match p.resource_type {
                 0 => glucose_count += 1,
+                1 => amino_count += 1,
                 2 => atp_count += 1,
                 _ => {}
             }
         }
         self.atp_particle_count = atp_count;
         self.glucose_particle_count = glucose_count;
+        self.amino_acid_particle_count = amino_count;
 
         // Death check: fully depleted when no motor charge AND no ATP/glucose particles
         if self.motor_charge <= 0.0 && atp_count == 0 && glucose_count == 0 {
@@ -399,6 +421,14 @@ impl Simulation {
 
         self.sync_packed_arrays();
         self.sync_interior_arrays();
+        self.sync_mrna_progress();
+    }
+
+    fn sync_mrna_progress(&mut self) {
+        self.mrna_progress = PackedInt32Array::new();
+        for i in 0..MRNA_COUNT {
+            self.mrna_progress.push(self.mrna_progress_internal[i]);
+        }
     }
 
     #[func]
@@ -406,10 +436,6 @@ impl Simulation {
         let mut best_idx: Option<usize> = None;
         let mut best_dist = PICK_RADIUS;
         for (i, p) in self.interior_particles.iter().enumerate() {
-            // Only glucose (0) and ATP (2) are draggable
-            if p.resource_type != 0 && p.resource_type != 2 {
-                continue;
-            }
             let dx = p.x - x;
             let dy = p.y - y;
             let dist = (dx * dx + dy * dy).sqrt();
@@ -484,6 +510,20 @@ impl Simulation {
                     });
                 }
             }
+        } else if p_type == 1 {
+            // Amino acid on mRNA?
+            for m in 0..MRNA_COUNT {
+                let mrna_x = MRNA_ANGLES[m].cos() * MRNA_DIST;
+                let mrna_y = MRNA_ANGLES[m].sin() * MRNA_DIST;
+                let dx = x - mrna_x;
+                let dy = y - mrna_y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist < MRNA_COLLISION_DIST && self.mrna_progress_internal[m] < MRNA_REQUIRED[m] {
+                    self.mrna_progress_internal[m] += 1;
+                    self.interior_particles.swap_remove(idx);
+                    break;
+                }
+            }
         } else if p_type == 2 {
             // ATP on motor?
             let motor_x = MOTOR_ANGLE.cos() * INTERIOR_RADIUS * 0.9;
@@ -508,9 +548,6 @@ impl Simulation {
         let mut best_idx: i32 = -1;
         let mut best_dist = PICK_RADIUS;
         for (i, p) in self.interior_particles.iter().enumerate() {
-            if p.resource_type != 0 && p.resource_type != 2 {
-                continue;
-            }
             let dx = p.x - x;
             let dy = p.y - y;
             let dist = (dx * dx + dy * dy).sqrt();
@@ -545,6 +582,9 @@ impl Simulation {
         self.motor_charge_display = STARTING_ATP;
         self.atp_particle_count = 0;
         self.glucose_particle_count = 0;
+        self.amino_acid_particle_count = 0;
+        self.mrna_progress_internal = [0; MRNA_COUNT];
+        self.mrna_progress = PackedInt32Array::from(&[0i32; MRNA_COUNT][..]);
         self.interior_view = false;
         self.interior_particles.clear();
         self.dragged_particle_index = None;

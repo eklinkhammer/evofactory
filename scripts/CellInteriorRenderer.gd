@@ -49,6 +49,9 @@ func _draw() -> void:
 		else:
 			draw_circle(pip_pos, 3.0, Color(0.3, 0.3, 0.3))
 			draw_arc(pip_pos, 3.0, 0, TAU, 8, Color(0.5, 0.5, 0.5), 1.0)
+	# Completion ring when motor fully charged
+	if current_charge >= max_charge:
+		draw_arc(motor_pos, 14.0, 0, TAU, 24, Color(1.0, 0.8, 0.3), 2.5)
 
 	# mRNA strands
 	var mrna_xs: PackedFloat32Array = simulation.mrna_xs
@@ -59,9 +62,19 @@ func _draw() -> void:
 		Color(1.0, 0.6, 0.2),   # motor — orange
 		Color(0.3, 0.85, 0.9),  # membrane — cyan
 	]
+	var mrna_progress: PackedInt32Array = simulation.mrna_progress
+	var mrna_required: PackedInt32Array = simulation.mrna_required
 	for i in range(mrna_xs.size()):
 		var center := Vector2(mrna_xs[i], mrna_ys[i])
 		var col: Color = mrna_colors[mrna_types[i]]
+
+		# Glow when dragging amino acid and mRNA not full
+		if simulation.drag_active and simulation.dragged_particle_type == 1:
+			if i < mrna_progress.size() and i < mrna_required.size():
+				if mrna_progress[i] < mrna_required[i]:
+					draw_circle(center, 18.0, Color(0.5, 0.3, 0.85, 0.25))
+					draw_arc(center, 18.0, 0, TAU, 16, Color(0.6, 0.4, 0.9, 0.7), 2.0)
+
 		# Wavy strand: 4 segments zig-zagging horizontally
 		var seg_len := 3.0
 		var amp := 2.5
@@ -72,6 +85,24 @@ func _draw() -> void:
 			draw_line(p0, p1, col, 2.0)
 		# Colored dot at the right end
 		draw_circle(s_start + Vector2(4 * seg_len, amp if 4 % 2 == 0 else -amp), 3.0, col)
+
+		# Progress pips below strand
+		if i < mrna_progress.size() and i < mrna_required.size():
+			var req: int = mrna_required[i]
+			var prog: int = mrna_progress[i]
+			var pip_y := center.y + 10.0
+			var total_width: float = (req - 1) * 6.0
+			var pip_start_x: float = center.x - total_width / 2.0
+			for p in range(req):
+				var pip_pos := Vector2(pip_start_x + p * 6.0, pip_y)
+				if p < prog:
+					draw_circle(pip_pos, 2.5, col)
+				else:
+					draw_circle(pip_pos, 2.5, Color(0.3, 0.3, 0.3))
+					draw_arc(pip_pos, 2.5, 0, TAU, 8, Color(0.5, 0.5, 0.5), 1.0)
+			# Completion ring when full
+			if prog >= req:
+				draw_arc(center, 14.0, 0, TAU, 24, col, 2.5)
 
 	# Interior particles
 	var xs: PackedFloat32Array = simulation.interior_xs
@@ -101,6 +132,7 @@ func _draw() -> void:
 		var drag_col: Color
 		match simulation.dragged_particle_type:
 			0: drag_col = glucose_color
+			1: drag_col = amino_color
 			2: drag_col = atp_color
 			_: drag_col = Color.WHITE
 		draw_arc(drag_pos, 9.0, 0, TAU, 16, drag_col, 2.5)
