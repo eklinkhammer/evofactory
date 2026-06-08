@@ -119,6 +119,8 @@ pub struct Simulation {
     #[var]
     motor_count: i32,
     dragged_motor_index: Option<usize>,
+    dragged_mrna_index: Option<usize>,
+    dragged_enzyme: bool,
 
     #[var]
     enzyme_interior_x: f32,
@@ -204,6 +206,8 @@ impl INode for Simulation {
             motor_charges: PackedFloat32Array::new(),
             motor_count: 1,
             dragged_motor_index: None,
+            dragged_mrna_index: None,
+            dragged_enzyme: false,
 
             enzyme_interior_x: 0.0,
             enzyme_interior_y: 0.0,
@@ -480,6 +484,22 @@ impl Simulation {
             }
         }
 
+        // Sync dragged enzyme position
+        if self.dragged_enzyme {
+            self.enzyme_interior_x = self.dragged_particle_x;
+            self.enzyme_interior_y = self.dragged_particle_y;
+            self.enzyme_x = self.dragged_particle_x;
+            self.enzyme_y = self.dragged_particle_y;
+        }
+
+        // Sync dragged mRNA position
+        if let Some(mi) = self.dragged_mrna_index {
+            if mi < MRNA_COUNT {
+                self.mrna_xs[mi as usize] = self.dragged_particle_x;
+                self.mrna_ys[mi as usize] = self.dragged_particle_y;
+            }
+        }
+
         // Sync dragged motor position — constrain to membrane edge
         if let Some(mi) = self.dragged_motor_index {
             if mi < self.motors.len() {
@@ -560,9 +580,16 @@ impl Simulation {
 
     #[func]
     fn try_pick_particle(&mut self, x: f32, y: f32) -> bool {
-        let mut best_idx: Option<usize> = None;
-        let mut best_motor: Option<usize> = None;
         let mut best_dist = PICK_RADIUS;
+
+        // Track which kind of thing is closest
+        enum PickTarget {
+            Particle(usize),
+            Motor(usize),
+            Enzyme,
+            Mrna(usize),
+        }
+        let mut best: Option<PickTarget> = None;
 
         // Check particles
         for (i, p) in self.interior_particles.iter().enumerate() {
@@ -571,8 +598,7 @@ impl Simulation {
             let dist = (dx * dx + dy * dy).sqrt();
             if dist < best_dist {
                 best_dist = dist;
-                best_idx = Some(i);
-                best_motor = None;
+                best = Some(PickTarget::Particle(i));
             }
         }
 
@@ -583,35 +609,82 @@ impl Simulation {
             let dist = (dx * dx + dy * dy).sqrt();
             if dist < best_dist {
                 best_dist = dist;
-                best_motor = Some(i);
-                best_idx = None;
+                best = Some(PickTarget::Motor(i));
             }
         }
 
-        if let Some(mi) = best_motor {
-            self.dragged_motor_index = Some(mi);
-            self.dragged_particle_index = None;
-            self.dragged_particle_x = self.motors[mi].x;
-            self.dragged_particle_y = self.motors[mi].y;
-            self.drag_active = true;
-            self.dragged_particle_type = 3; // motor type
-            true
-        } else if let Some(idx) = best_idx {
-            self.dragged_particle_index = Some(idx);
-            self.dragged_motor_index = None;
-            self.dragged_particle_x = self.interior_particles[idx].x;
-            self.dragged_particle_y = self.interior_particles[idx].y;
-            self.drag_active = true;
-            self.dragged_particle_type = self.interior_particles[idx].resource_type;
-            true
-        } else {
-            false
+        // Check enzyme
+        {
+            let dx = self.enzyme_interior_x - x;
+            let dy = self.enzyme_interior_y - y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist < best_dist {
+                best_dist = dist;
+                best = Some(PickTarget::Enzyme);
+            }
+        }
+
+        // Check mRNA strands
+        for i in 0..MRNA_COUNT {
+            let dx = self.mrna_xs[i as usize] - x;
+            let dy = self.mrna_ys[i as usize] - y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist < best_dist {
+                best_dist = dist;
+                best = Some(PickTarget::Mrna(i));
+            }
+        }
+
+        // Clear all drag states
+        self.dragged_particle_index = None;
+        self.dragged_motor_index = None;
+        self.dragged_enzyme = false;
+        self.dragged_mrna_index = None;
+
+        match best {
+            Some(PickTarget::Motor(mi)) => {
+                self.dragged_motor_index = Some(mi);
+                self.dragged_particle_x = self.motors[mi].x;
+                self.dragged_particle_y = self.motors[mi].y;
+                self.drag_active = true;
+                self.dragged_particle_type = 3;
+                true
+            }
+            Some(PickTarget::Particle(idx)) => {
+                self.dragged_particle_index = Some(idx);
+                self.dragged_particle_x = self.interior_particles[idx].x;
+                self.dragged_particle_y = self.interior_particles[idx].y;
+                self.drag_active = true;
+                self.dragged_particle_type = self.interior_particles[idx].resource_type;
+                true
+            }
+            Some(PickTarget::Enzyme) => {
+                self.dragged_enzyme = true;
+                self.dragged_particle_x = self.enzyme_interior_x;
+                self.dragged_particle_y = self.enzyme_interior_y;
+                self.drag_active = true;
+                self.dragged_particle_type = 4;
+                true
+            }
+            Some(PickTarget::Mrna(i)) => {
+                self.dragged_mrna_index = Some(i);
+                self.dragged_particle_x = self.mrna_xs[i as usize];
+                self.dragged_particle_y = self.mrna_ys[i as usize];
+                self.drag_active = true;
+                self.dragged_particle_type = 5;
+                true
+            }
+            None => false,
         }
     }
 
     #[func]
     fn drag_particle(&mut self, x: f32, y: f32) {
-        if self.dragged_particle_index.is_none() && self.dragged_motor_index.is_none() {
+        if self.dragged_particle_index.is_none()
+            && self.dragged_motor_index.is_none()
+            && !self.dragged_enzyme
+            && self.dragged_mrna_index.is_none()
+        {
             return;
         }
 
@@ -621,7 +694,7 @@ impl Simulation {
             self.dragged_particle_x = angle.cos() * MOTOR_MEMBRANE_RADIUS;
             self.dragged_particle_y = angle.sin() * MOTOR_MEMBRANE_RADIUS;
         } else {
-            // Clamp to membrane interior
+            // Clamp to membrane interior (particles, enzyme, mRNA)
             let dist = (x * x + y * y).sqrt();
             let max_r = INTERIOR_RADIUS * 0.9;
             if dist > max_r {
@@ -646,6 +719,30 @@ impl Simulation {
             }
             self.dragged_motor_index = None;
             self.dragged_particle_index = None;
+            self.drag_active = false;
+            self.dragged_particle_type = -1;
+            return;
+        }
+
+        // Enzyme drop: finalize position
+        if self.dragged_enzyme {
+            self.enzyme_interior_x = self.dragged_particle_x;
+            self.enzyme_interior_y = self.dragged_particle_y;
+            self.enzyme_x = self.dragged_particle_x;
+            self.enzyme_y = self.dragged_particle_y;
+            self.dragged_enzyme = false;
+            self.drag_active = false;
+            self.dragged_particle_type = -1;
+            return;
+        }
+
+        // mRNA drop: finalize position
+        if let Some(mi) = self.dragged_mrna_index {
+            if mi < MRNA_COUNT {
+                self.mrna_xs[mi as usize] = self.dragged_particle_x;
+                self.mrna_ys[mi as usize] = self.dragged_particle_y;
+            }
+            self.dragged_mrna_index = None;
             self.drag_active = false;
             self.dragged_particle_type = -1;
             return;
@@ -688,8 +785,8 @@ impl Simulation {
         } else if p_type == 1 {
             // Amino acid on mRNA?
             for m in 0..MRNA_COUNT {
-                let mrna_x = MRNA_ANGLES[m].cos() * MRNA_DIST;
-                let mrna_y = MRNA_ANGLES[m].sin() * MRNA_DIST;
+                let mrna_x = self.mrna_xs[m as usize];
+                let mrna_y = self.mrna_ys[m as usize];
                 let dx = x - mrna_x;
                 let dy = y - mrna_y;
                 let dist = (dx * dx + dy * dy).sqrt();
@@ -757,6 +854,8 @@ impl Simulation {
     fn cancel_drag(&mut self) {
         self.dragged_particle_index = None;
         self.dragged_motor_index = None;
+        self.dragged_enzyme = false;
+        self.dragged_mrna_index = None;
         self.drag_active = false;
         self.dragged_particle_type = -1;
     }
@@ -784,10 +883,16 @@ impl Simulation {
         self.interior_particles.clear();
         self.dragged_particle_index = None;
         self.dragged_motor_index = None;
+        self.dragged_enzyme = false;
+        self.dragged_mrna_index = None;
         self.dragged_particle_x = 0.0;
         self.dragged_particle_y = 0.0;
         self.drag_active = false;
         self.dragged_particle_type = -1;
+        self.enzyme_interior_x = 0.0;
+        self.enzyme_interior_y = 0.0;
+        self.enzyme_x = 0.0;
+        self.enzyme_y = 0.0;
         self.mrna_xs = PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.cos() * MRNA_DIST)[..]);
         self.mrna_ys = PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]);
         self.mrna_types = PackedInt32Array::from(&[0i32, 1, 2][..]);
