@@ -70,7 +70,10 @@ func _draw() -> void:
 		draw_circle(player_pos, radius, cell_color)
 		draw_arc(player_pos, radius, 0, TAU, 32, outline_color, 2.0)
 
-		# Motor indicator on membrane
-		var motor_angle: float = atan2(simulation.motor_interior_y, simulation.motor_interior_x)
-		var motor_screen_pos := player_pos + Vector2(cos(motor_angle), sin(motor_angle)) * radius
-		draw_circle(motor_screen_pos, 4.0, Color(1.0, 0.6, 0.2))
+		# Motor indicators on membrane (multiple)
+		var m_xs: PackedFloat32Array = simulation.motor_xs
+		var m_ys: PackedFloat32Array = simulation.motor_ys
+		for mi in range(m_xs.size()):
+			var motor_angle: float = atan2(m_ys[mi], m_xs[mi])
+			var motor_screen_pos := player_pos + Vector2(cos(motor_angle), sin(motor_angle)) * radius
+			draw_circle(motor_screen_pos, 4.0, Color(1.0, 0.6, 0.2))

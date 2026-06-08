@@ -33,31 +33,46 @@ func _draw() -> void:
 	draw_circle(enzyme_pos, enzyme_r, Color(0.2, 0.5, 0.2))
 	draw_arc(enzyme_pos, enzyme_r, 0, TAU, 6, Color(0.4, 0.9, 0.4), 2.0)
 
-	# Membrane motor
-	var motor_pos := Vector2(simulation.motor_interior_x, simulation.motor_interior_y)
+	# Membrane motors (multiple)
+	var m_xs: PackedFloat32Array = simulation.motor_xs
+	var m_ys: PackedFloat32Array = simulation.motor_ys
+	var m_charges: PackedFloat32Array = simulation.motor_charges
+	var max_atp_per_motor: float = 5.0
 
-	# Drop target highlight: motor glows orange when dragging ATP
-	if simulation.drag_active and simulation.dragged_particle_type == 2 and simulation.motor_charge_display < simulation.player_max_atp:
-		draw_circle(motor_pos, 14.0, Color(1.0, 0.7, 0.2, 0.3))
-		draw_arc(motor_pos, 14.0, 0, TAU, 16, Color(1.0, 0.8, 0.3, 0.8), 2.0)
+	for mi in range(m_xs.size()):
+		var motor_pos := Vector2(m_xs[mi], m_ys[mi])
+		var motor_charge: float = m_charges[mi]
 
-	draw_circle(motor_pos, 8.0, Color(1.0, 0.6, 0.2))
-	draw_arc(motor_pos, 10.0, 0, TAU, 16, Color(1.0, 0.8, 0.3), 2.0)
+		# Drop target highlight: motor glows orange when dragging ATP and not full
+		if simulation.drag_active and simulation.dragged_particle_type == 2 and motor_charge < max_atp_per_motor:
+			draw_circle(motor_pos, 14.0, Color(1.0, 0.7, 0.2, 0.3))
+			draw_arc(motor_pos, 14.0, 0, TAU, 16, Color(1.0, 0.8, 0.3, 0.8), 2.0)
 
-	# Motor charge pips: 5 small circles in semicircle around motor
-	var max_charge := int(simulation.player_max_atp)
-	var current_charge := int(simulation.motor_charge_display)
-	for i in range(max_charge):
-		var pip_angle: float = PI + (float(i) / float(max_charge - 1)) * PI
-		var pip_pos := motor_pos + Vector2(cos(pip_angle), sin(pip_angle)) * 18.0
-		if i < current_charge:
-			draw_circle(pip_pos, 3.0, Color(1.0, 0.8, 0.3))
-		else:
-			draw_circle(pip_pos, 3.0, Color(0.3, 0.3, 0.3))
-			draw_arc(pip_pos, 3.0, 0, TAU, 8, Color(0.5, 0.5, 0.5), 1.0)
-	# Completion ring when motor fully charged
-	if current_charge >= max_charge:
-		draw_arc(motor_pos, 14.0, 0, TAU, 24, Color(1.0, 0.8, 0.3), 2.5)
+		# Motor drag glow (type 3)
+		if simulation.drag_active and simulation.dragged_particle_type == 3:
+			var drag_pos := Vector2(simulation.dragged_particle_x, simulation.dragged_particle_y)
+			var dx: float = drag_pos.x - motor_pos.x
+			var dy: float = drag_pos.y - motor_pos.y
+			if dx * dx + dy * dy < 1.0:
+				draw_arc(motor_pos, 12.0, 0, TAU, 16, Color(1.0, 0.6, 0.2, 0.7), 2.5)
+
+		draw_circle(motor_pos, 8.0, Color(1.0, 0.6, 0.2))
+		draw_arc(motor_pos, 10.0, 0, TAU, 16, Color(1.0, 0.8, 0.3), 2.0)
+
+		# Motor charge pips: 5 small circles in semicircle around motor
+		var max_charge := int(max_atp_per_motor)
+		var current_charge := int(motor_charge)
+		for i in range(max_charge):
+			var pip_angle: float = PI + (float(i) / float(max_charge - 1)) * PI
+			var pip_pos := motor_pos + Vector2(cos(pip_angle), sin(pip_angle)) * 18.0
+			if i < current_charge:
+				draw_circle(pip_pos, 3.0, Color(1.0, 0.8, 0.3))
+			else:
+				draw_circle(pip_pos, 3.0, Color(0.3, 0.3, 0.3))
+				draw_arc(pip_pos, 3.0, 0, TAU, 8, Color(0.5, 0.5, 0.5), 1.0)
+		# Completion ring when motor fully charged
+		if current_charge >= max_charge:
+			draw_arc(motor_pos, 14.0, 0, TAU, 24, Color(1.0, 0.8, 0.3), 2.5)
 
 	# mRNA strands
 	var mrna_xs: PackedFloat32Array = simulation.mrna_xs
@@ -140,5 +155,6 @@ func _draw() -> void:
 			0: drag_col = glucose_color
 			1: drag_col = amino_color
 			2: drag_col = atp_color
+			3: drag_col = Color(1.0, 0.6, 0.2)  # motor orange
 			_: drag_col = Color.WHITE
 		draw_arc(drag_pos, 9.0, 0, TAU, 16, drag_col, 2.5)

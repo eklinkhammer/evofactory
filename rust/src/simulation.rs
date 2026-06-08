@@ -20,6 +20,7 @@ const ENZYME_RADIUS: f32 = 15.0;
 const ENZYME_COLLISION_DIST: f32 = 20.0;
 const MOTOR_COLLISION_DIST: f32 = 25.0;
 const MOTOR_ANGLE: f32 = 0.0;
+const MOTOR_MEMBRANE_RADIUS: f32 = INTERIOR_RADIUS;
 const MRNA_COUNT: usize = 3;
 const MRNA_DIST: f32 = 70.0;
 const MRNA_COLLISION_DIST: f32 = 20.0;
@@ -42,6 +43,12 @@ struct Resource {
     y: f32,
     resource_type: i32, // 0 = glucose, 1 = amino acid
     amount: f32,
+}
+
+struct Motor {
+    x: f32,
+    y: f32,
+    charge: f32,
 }
 
 #[derive(GodotClass)]
@@ -101,7 +108,17 @@ pub struct Simulation {
 
     enzyme_x: f32,
     enzyme_y: f32,
-    motor_charge: f32,
+
+    motors: Vec<Motor>,
+    #[var]
+    motor_xs: PackedFloat32Array,
+    #[var]
+    motor_ys: PackedFloat32Array,
+    #[var]
+    motor_charges: PackedFloat32Array,
+    #[var]
+    motor_count: i32,
+    dragged_motor_index: Option<usize>,
 
     #[var]
     enzyme_interior_x: f32,
@@ -176,7 +193,17 @@ impl INode for Simulation {
 
             enzyme_x: 0.0,
             enzyme_y: 0.0,
-            motor_charge: STARTING_ATP,
+
+            motors: vec![Motor {
+                x: MOTOR_ANGLE.cos() * MOTOR_MEMBRANE_RADIUS,
+                y: MOTOR_ANGLE.sin() * MOTOR_MEMBRANE_RADIUS,
+                charge: STARTING_ATP,
+            }],
+            motor_xs: PackedFloat32Array::new(),
+            motor_ys: PackedFloat32Array::new(),
+            motor_charges: PackedFloat32Array::new(),
+            motor_count: 1,
+            dragged_motor_index: None,
 
             enzyme_interior_x: 0.0,
             enzyme_interior_y: 0.0,
@@ -223,9 +250,34 @@ impl Simulation {
         }
     }
 
+    fn sync_motor_arrays(&mut self) {
+        self.motor_xs = PackedFloat32Array::new();
+        self.motor_ys = PackedFloat32Array::new();
+        self.motor_charges = PackedFloat32Array::new();
+
+        for m in &self.motors {
+            self.motor_xs.push(m.x);
+            self.motor_ys.push(m.y);
+            self.motor_charges.push(m.charge);
+        }
+        self.motor_count = self.motors.len() as i32;
+
+        // Backward compat: first motor position for exterior view
+        if let Some(first) = self.motors.first() {
+            self.motor_interior_x = first.x;
+            self.motor_interior_y = first.y;
+        }
+
+        // Aggregate charge for HUD
+        let total_charge: f32 = self.motors.iter().map(|m| m.charge).sum();
+        self.motor_charge_display = total_charge;
+        self.player_max_atp = MAX_ATP * self.motors.len() as f32;
+    }
+
     #[func]
     fn move_player(&mut self, dx: f32, dy: f32) {
-        if self.motor_charge <= 0.0 {
+        let total_charge: f32 = self.motors.iter().map(|m| m.charge).sum();
+        if total_charge <= 0.0 {
             return;
         }
         let speed = 100.0;
@@ -395,14 +447,23 @@ impl Simulation {
             self.respawn_resource(i);
         }
 
-        // Movement-based metabolism (uses motor_charge)
+        // Movement-based metabolism (distribute across all motors)
         let speed = (self.velocity_x * self.velocity_x + self.velocity_y * self.velocity_y).sqrt();
         if speed > VELOCITY_THRESHOLD {
-            if self.motor_charge > 0.0 {
+            let total_charge: f32 = self.motors.iter().map(|m| m.charge).sum();
+            if total_charge > 0.0 {
                 let cost = MOVEMENT_ATP_COST + (self.player_radius - MIN_RADIUS) * SIZE_METABOLISM_FACTOR;
-                self.motor_charge -= cost * dt;
-                if self.motor_charge < 0.0 {
-                    self.motor_charge = 0.0;
+                let cost_per_frame = cost * dt;
+                // Distribute cost evenly across motors that have charge
+                let charged_motors: Vec<usize> = self.motors.iter().enumerate()
+                    .filter(|(_, m)| m.charge > 0.0)
+                    .map(|(i, _)| i)
+                    .collect();
+                if !charged_motors.is_empty() {
+                    let cost_each = cost_per_frame / charged_motors.len() as f32;
+                    for &i in &charged_motors {
+                        self.motors[i].charge = (self.motors[i].charge - cost_each).max(0.0);
+                    }
                 }
             } else {
                 // No motor charge — dampen velocity (lose propulsion)
@@ -416,6 +477,17 @@ impl Simulation {
             if idx < self.interior_particles.len() {
                 self.interior_particles[idx].x = self.dragged_particle_x;
                 self.interior_particles[idx].y = self.dragged_particle_y;
+            }
+        }
+
+        // Sync dragged motor position — constrain to membrane edge
+        if let Some(mi) = self.dragged_motor_index {
+            if mi < self.motors.len() {
+                let angle = self.dragged_particle_y.atan2(self.dragged_particle_x);
+                self.motors[mi].x = angle.cos() * MOTOR_MEMBRANE_RADIUS;
+                self.motors[mi].y = angle.sin() * MOTOR_MEMBRANE_RADIUS;
+                self.dragged_particle_x = self.motors[mi].x;
+                self.dragged_particle_y = self.motors[mi].y;
             }
         }
 
@@ -464,18 +536,18 @@ impl Simulation {
         self.amino_acid_particle_count = amino_count;
 
         // Death check: fully depleted when no motor charge AND no ATP/glucose particles
-        if self.motor_charge <= 0.0 && atp_count == 0 && glucose_count == 0 {
-            self.motor_charge = 0.0;
+        let total_charge: f32 = self.motors.iter().map(|m| m.charge).sum();
+        if total_charge <= 0.0 && atp_count == 0 && glucose_count == 0 {
             self.player_alive = false;
         }
 
         // Backward-compatible energy ratio for WorldRenderer cell color
-        self.player_atp = self.motor_charge;
-        self.player_energy_ratio = self.motor_charge / self.player_max_atp;
-        self.motor_charge_display = self.motor_charge;
+        self.player_atp = total_charge;
+        self.player_energy_ratio = total_charge / self.player_max_atp.max(1.0);
 
         self.sync_packed_arrays();
         self.sync_interior_arrays();
+        self.sync_motor_arrays();
         self.sync_mrna_progress();
     }
 
@@ -489,7 +561,10 @@ impl Simulation {
     #[func]
     fn try_pick_particle(&mut self, x: f32, y: f32) -> bool {
         let mut best_idx: Option<usize> = None;
+        let mut best_motor: Option<usize> = None;
         let mut best_dist = PICK_RADIUS;
+
+        // Check particles
         for (i, p) in self.interior_particles.iter().enumerate() {
             let dx = p.x - x;
             let dy = p.y - y;
@@ -497,10 +572,33 @@ impl Simulation {
             if dist < best_dist {
                 best_dist = dist;
                 best_idx = Some(i);
+                best_motor = None;
             }
         }
-        if let Some(idx) = best_idx {
+
+        // Check motors
+        for (i, m) in self.motors.iter().enumerate() {
+            let dx = m.x - x;
+            let dy = m.y - y;
+            let dist = (dx * dx + dy * dy).sqrt();
+            if dist < best_dist {
+                best_dist = dist;
+                best_motor = Some(i);
+                best_idx = None;
+            }
+        }
+
+        if let Some(mi) = best_motor {
+            self.dragged_motor_index = Some(mi);
+            self.dragged_particle_index = None;
+            self.dragged_particle_x = self.motors[mi].x;
+            self.dragged_particle_y = self.motors[mi].y;
+            self.drag_active = true;
+            self.dragged_particle_type = 3; // motor type
+            true
+        } else if let Some(idx) = best_idx {
             self.dragged_particle_index = Some(idx);
+            self.dragged_motor_index = None;
             self.dragged_particle_x = self.interior_particles[idx].x;
             self.dragged_particle_y = self.interior_particles[idx].y;
             self.drag_active = true;
@@ -513,24 +611,46 @@ impl Simulation {
 
     #[func]
     fn drag_particle(&mut self, x: f32, y: f32) {
-        if self.dragged_particle_index.is_none() {
+        if self.dragged_particle_index.is_none() && self.dragged_motor_index.is_none() {
             return;
         }
-        // Clamp to membrane interior
-        let dist = (x * x + y * y).sqrt();
-        let max_r = INTERIOR_RADIUS * 0.9;
-        if dist > max_r {
-            let scale = max_r / dist;
-            self.dragged_particle_x = x * scale;
-            self.dragged_particle_y = y * scale;
+
+        if self.dragged_motor_index.is_some() {
+            // Motor drag: constrain to membrane edge
+            let angle = y.atan2(x);
+            self.dragged_particle_x = angle.cos() * MOTOR_MEMBRANE_RADIUS;
+            self.dragged_particle_y = angle.sin() * MOTOR_MEMBRANE_RADIUS;
         } else {
-            self.dragged_particle_x = x;
-            self.dragged_particle_y = y;
+            // Clamp to membrane interior
+            let dist = (x * x + y * y).sqrt();
+            let max_r = INTERIOR_RADIUS * 0.9;
+            if dist > max_r {
+                let scale = max_r / dist;
+                self.dragged_particle_x = x * scale;
+                self.dragged_particle_y = y * scale;
+            } else {
+                self.dragged_particle_x = x;
+                self.dragged_particle_y = y;
+            }
         }
     }
 
     #[func]
     fn drop_particle(&mut self, x: f32, y: f32) {
+        // Motor drop: just finalize position
+        if let Some(mi) = self.dragged_motor_index {
+            if mi < self.motors.len() {
+                let angle = y.atan2(x);
+                self.motors[mi].x = angle.cos() * MOTOR_MEMBRANE_RADIUS;
+                self.motors[mi].y = angle.sin() * MOTOR_MEMBRANE_RADIUS;
+            }
+            self.dragged_motor_index = None;
+            self.dragged_particle_index = None;
+            self.drag_active = false;
+            self.dragged_particle_type = -1;
+            return;
+        }
+
         let idx = match self.dragged_particle_index {
             Some(i) => i,
             None => return,
@@ -576,24 +696,43 @@ impl Simulation {
                 if dist < MRNA_COLLISION_DIST && self.mrna_progress_internal[m] < MRNA_REQUIRED[m] {
                     self.mrna_progress_internal[m] += 1;
                     self.interior_particles.swap_remove(idx);
+
+                    // Check if motor mRNA (index 1) completed — build new motor
+                    if m == 1 && self.mrna_progress_internal[1] >= MRNA_REQUIRED[1] {
+                        let spawn_angle = MRNA_ANGLES[1]; // 270° bottom
+                        self.motors.push(Motor {
+                            x: spawn_angle.cos() * MOTOR_MEMBRANE_RADIUS,
+                            y: spawn_angle.sin() * MOTOR_MEMBRANE_RADIUS,
+                            charge: 0.0,
+                        });
+                        self.mrna_progress_internal[1] = 0;
+                    }
+
                     break;
                 }
             }
         } else if p_type == 2 {
-            // ATP on motor?
-            let motor_x = MOTOR_ANGLE.cos() * INTERIOR_RADIUS;
-            let motor_y = MOTOR_ANGLE.sin() * INTERIOR_RADIUS;
-            let dx = x - motor_x;
-            let dy = y - motor_y;
-            let dist = (dx * dx + dy * dy).sqrt();
-            if dist < MOTOR_COLLISION_DIST && self.motor_charge < MAX_ATP {
+            // ATP on motor? Find nearest motor within range
+            let mut best_motor: Option<usize> = None;
+            let mut best_motor_dist = MOTOR_COLLISION_DIST;
+            for (i, motor) in self.motors.iter().enumerate() {
+                let dx = x - motor.x;
+                let dy = y - motor.y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist < best_motor_dist && motor.charge < MAX_ATP {
+                    best_motor_dist = dist;
+                    best_motor = Some(i);
+                }
+            }
+            if let Some(mi) = best_motor {
                 self.interior_particles.swap_remove(idx);
-                self.motor_charge = (self.motor_charge + 1.0).min(MAX_ATP);
+                self.motors[mi].charge = (self.motors[mi].charge + 1.0).min(MAX_ATP);
             }
         }
 
         // Clear drag state
         self.dragged_particle_index = None;
+        self.dragged_motor_index = None;
         self.drag_active = false;
         self.dragged_particle_type = -1;
     }
@@ -617,6 +756,7 @@ impl Simulation {
     #[func]
     fn cancel_drag(&mut self) {
         self.dragged_particle_index = None;
+        self.dragged_motor_index = None;
         self.drag_active = false;
         self.dragged_particle_type = -1;
     }
@@ -626,8 +766,8 @@ impl Simulation {
         self.player_x = 0.0;
         self.player_y = 0.0;
         self.player_radius = MIN_RADIUS;
-        self.motor_charge = STARTING_ATP;
         self.player_atp = STARTING_ATP;
+        self.player_max_atp = MAX_ATP;
         self.player_alive = true;
         self.player_glucose = 0.0;
         self.player_amino_acids = 0.0;
@@ -643,6 +783,7 @@ impl Simulation {
         self.interior_view = false;
         self.interior_particles.clear();
         self.dragged_particle_index = None;
+        self.dragged_motor_index = None;
         self.dragged_particle_x = 0.0;
         self.dragged_particle_y = 0.0;
         self.drag_active = false;
@@ -651,10 +792,18 @@ impl Simulation {
         self.mrna_ys = PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]);
         self.mrna_types = PackedInt32Array::from(&[0i32, 1, 2][..]);
 
+        // Reset motors to single motor at angle 0
+        self.motors = vec![Motor {
+            x: MOTOR_ANGLE.cos() * MOTOR_MEMBRANE_RADIUS,
+            y: MOTOR_ANGLE.sin() * MOTOR_MEMBRANE_RADIUS,
+            charge: STARTING_ATP,
+        }];
+
         for i in 0..self.resources.len() {
             self.respawn_resource(i);
         }
         self.sync_packed_arrays();
         self.sync_interior_arrays();
+        self.sync_motor_arrays();
     }
 }
