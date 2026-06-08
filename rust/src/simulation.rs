@@ -581,8 +581,8 @@ impl Simulation {
             }
         } else if p_type == 2 {
             // ATP on motor?
-            let motor_x = MOTOR_ANGLE.cos() * INTERIOR_RADIUS * 0.9;
-            let motor_y = MOTOR_ANGLE.sin() * INTERIOR_RADIUS * 0.9;
+            let motor_x = MOTOR_ANGLE.cos() * INTERIOR_RADIUS;
+            let motor_y = MOTOR_ANGLE.sin() * INTERIOR_RADIUS;
             let dx = x - motor_x;
             let dy = y - motor_y;
             let dist = (dx * dx + dy * dy).sqrt();
