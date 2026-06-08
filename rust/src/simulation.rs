@@ -6,6 +6,8 @@ const WORLD_BOUND: f32 = 500.0;
 const SPAWN_BOUND: f32 = 480.0;
 const MIN_RESPAWN_DIST: f32 = 100.0;
 const DRIFT_SPEED: f32 = 5.0;
+const START_AREA_RADIUS: f32 = 150.0;
+const START_AREA_WEIGHT: f32 = 3.0;
 
 const MOVEMENT_ATP_COST: f32 = 0.5;
 const SIZE_METABOLISM_FACTOR: f32 = 0.02;
@@ -318,9 +320,23 @@ impl Simulation {
     #[func]
     fn spawn_resources(&mut self, count: i32) {
         let mut rng = rand::thread_rng();
+        let threshold = START_AREA_WEIGHT / (START_AREA_WEIGHT + 1.0);
         for _ in 0..count {
-            let x = rng.gen_range(-SPAWN_BOUND..SPAWN_BOUND);
-            let y = rng.gen_range(-SPAWN_BOUND..SPAWN_BOUND);
+            let (x, y) = if rng.gen::<f32>() < threshold {
+                // Spawn near origin (rejection sampling within circle)
+                loop {
+                    let cx = rng.gen_range(-START_AREA_RADIUS..START_AREA_RADIUS);
+                    let cy = rng.gen_range(-START_AREA_RADIUS..START_AREA_RADIUS);
+                    if cx * cx + cy * cy <= START_AREA_RADIUS * START_AREA_RADIUS {
+                        break (cx, cy);
+                    }
+                }
+            } else {
+                (
+                    rng.gen_range(-SPAWN_BOUND..SPAWN_BOUND),
+                    rng.gen_range(-SPAWN_BOUND..SPAWN_BOUND),
+                )
+            };
             let resource_type = rng.gen_range(0..2);
             let amount = 1.0;
             self.resources.push(Resource {
@@ -977,10 +993,9 @@ impl Simulation {
             charge: STARTING_ATP,
         }];
 
-        for i in 0..self.resources.len() {
-            self.respawn_resource(i);
-        }
-        self.sync_packed_arrays();
+        let count = self.resources.len() as i32;
+        self.resources.clear();
+        self.spawn_resources(count);
         self.sync_interior_arrays();
         self.sync_motor_arrays();
     }
