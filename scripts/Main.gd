@@ -116,10 +116,13 @@ func _process(delta: float) -> void:
 
 func _check_tooltip_click(local_pos: Vector2) -> void:
 	var hit := -1
-	var enzyme_pos := Vector2(simulation.enzyme_interior_x, simulation.enzyme_interior_y)
-	if local_pos.distance_to(enzyme_pos) < 20.0:
-		hit = 0
-	else:
+	var z_xs: PackedFloat32Array = simulation.zymase_xs
+	var z_ys: PackedFloat32Array = simulation.zymase_ys
+	for zi in range(z_xs.size()):
+		if local_pos.distance_to(Vector2(z_xs[zi], z_ys[zi])) < 20.0:
+			hit = 0
+			break
+	if hit < 0:
 		var mrna_xs: PackedFloat32Array = simulation.mrna_xs
 		var mrna_ys: PackedFloat32Array = simulation.mrna_ys
 		for i in range(mrna_xs.size()):

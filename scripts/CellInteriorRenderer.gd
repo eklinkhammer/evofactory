@@ -3,7 +3,7 @@ extends Node2D
 @onready var simulation: Node = get_node("../Simulation")
 
 var hovered_index: int = -1
-var tooltip_target: int = -1  # -1=none, 0=enzyme, 1/2/3=mRNA indices
+var tooltip_target: int = -1  # -1=none, 0=zymase, 1/2/3=mRNA indices
 
 func _ready() -> void:
 	z_index = 1
@@ -22,37 +22,46 @@ func _draw() -> void:
 	# Membrane outline
 	draw_arc(Vector2.ZERO, radius, 0, TAU, 64, Color(0.3, 0.8, 0.3), 3.0)
 
-	# Enzyme at center
-	var enzyme_pos := Vector2(simulation.enzyme_interior_x, simulation.enzyme_interior_y)
-	var enzyme_r: float = simulation.enzyme_interior_radius
-
-	# Drop target highlight: enzyme glows green when dragging glucose
-	if simulation.drag_active and simulation.dragged_particle_type == 0:
-		draw_circle(enzyme_pos, enzyme_r + 4.0, Color(0.3, 1.0, 0.3, 0.3))
-		draw_arc(enzyme_pos, enzyme_r + 4.0, 0, TAU, 16, Color(0.4, 1.0, 0.4, 0.8), 2.0)
-
-	draw_circle(enzyme_pos, enzyme_r, Color(0.2, 0.5, 0.2))
-	draw_arc(enzyme_pos, enzyme_r, 0, TAU, 6, Color(0.4, 0.9, 0.4), 2.0)
+	# Zymases (multiple)
+	var z_xs: PackedFloat32Array = simulation.zymase_xs
+	var z_ys: PackedFloat32Array = simulation.zymase_ys
+	var z_bufs: PackedInt32Array = simulation.zymase_buffers
+	var z_proc: PackedInt32Array = simulation.zymase_processing_flags
+	var z_tmrs: PackedFloat32Array = simulation.zymase_timers
+	var zymase_r: float = simulation.zymase_interior_radius
 
 	var font := ThemeDB.fallback_font
 	var font_size := 10
 
-	# Enzyme label
-	draw_string(font, enzyme_pos + Vector2(-15, enzyme_r + 14), "Enzyme", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.4, 0.9, 0.4, 0.6))
+	for zi in range(z_xs.size()):
+		var zymase_pos := Vector2(z_xs[zi], z_ys[zi])
 
-	# Enzyme processing progress arc
-	if simulation.enzyme_processing:
-		var progress: float = 1.0 - simulation.enzyme_timer / 2.0
-		draw_arc(enzyme_pos, enzyme_r + 6.0, -PI / 2, -PI / 2 + progress * TAU, 32, Color(0.4, 1.0, 0.4, 0.8), 2.5)
+		# Drop target highlight: zymase glows green when dragging glucose
+		if simulation.drag_active and simulation.dragged_particle_type == 0:
+			if zi < z_bufs.size() and z_bufs[zi] < 2:
+				draw_circle(zymase_pos, zymase_r + 4.0, Color(0.3, 1.0, 0.3, 0.3))
+				draw_arc(zymase_pos, zymase_r + 4.0, 0, TAU, 16, Color(0.4, 1.0, 0.4, 0.8), 2.0)
 
-	# Enzyme buffer pips
-	for b in range(2):
-		var pip_pos := enzyme_pos + Vector2(-5.0 + b * 10.0, enzyme_r + 24)
-		if b < simulation.enzyme_buffer:
-			draw_circle(pip_pos, 3.0, Color(0.95, 0.75, 0.2))
-		else:
-			draw_circle(pip_pos, 3.0, Color(0.3, 0.3, 0.3))
-			draw_arc(pip_pos, 3.0, 0, TAU, 8, Color(0.5, 0.5, 0.5), 1.0)
+		draw_circle(zymase_pos, zymase_r, Color(0.2, 0.5, 0.2))
+		draw_arc(zymase_pos, zymase_r, 0, TAU, 6, Color(0.4, 0.9, 0.4), 2.0)
+
+		# Zymase label
+		draw_string(font, zymase_pos + Vector2(-15, zymase_r + 14), "Zymase", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.4, 0.9, 0.4, 0.6))
+
+		# Zymase processing progress arc
+		if zi < z_proc.size() and z_proc[zi] == 1:
+			var progress: float = 1.0 - z_tmrs[zi] / 2.0
+			draw_arc(zymase_pos, zymase_r + 6.0, -PI / 2, -PI / 2 + progress * TAU, 32, Color(0.4, 1.0, 0.4, 0.8), 2.5)
+
+		# Zymase buffer pips
+		var buf_val: int = z_bufs[zi] if zi < z_bufs.size() else 0
+		for b in range(2):
+			var pip_pos := zymase_pos + Vector2(-5.0 + b * 10.0, zymase_r + 24)
+			if b < buf_val:
+				draw_circle(pip_pos, 3.0, Color(0.95, 0.75, 0.2))
+			else:
+				draw_circle(pip_pos, 3.0, Color(0.3, 0.3, 0.3))
+				draw_arc(pip_pos, 3.0, 0, TAU, 8, Color(0.5, 0.5, 0.5), 1.0)
 
 	# Membrane motors (multiple)
 	var m_xs: PackedFloat32Array = simulation.motor_xs
@@ -99,11 +108,11 @@ func _draw() -> void:
 	var mrna_xs: PackedFloat32Array = simulation.mrna_xs
 	var mrna_ys: PackedFloat32Array = simulation.mrna_ys
 	var mrna_types: PackedInt32Array = simulation.mrna_types
-	var mrna_names := ["Enzyme", "Motor", "Membrane"]
+	var mrna_names := ["Zymase", "Motor", "Membrane"]
 	var mrna_proc: PackedInt32Array = simulation.mrna_processing_flags
 	var mrna_tmrs: PackedFloat32Array = simulation.mrna_timers_display
 	var mrna_colors: Array[Color] = [
-		Color(0.3, 0.8, 0.3),   # enzyme — green
+		Color(0.3, 0.8, 0.3),   # zymase — green
 		Color(1.0, 0.6, 0.2),   # motor — orange
 		Color(0.3, 0.85, 0.9),  # membrane — cyan
 	]
@@ -197,11 +206,12 @@ func _draw() -> void:
 		var lines: PackedStringArray
 		match tooltip_target:
 			0:
-				tooltip_pos = enzyme_pos + Vector2(20, -30)
+				var first_zymase := Vector2(z_xs[0], z_ys[0]) if z_xs.size() > 0 else Vector2.ZERO
+				tooltip_pos = first_zymase + Vector2(20, -30)
 				lines = PackedStringArray(["Fermentation", "1 Glucose -> 2 ATP", "Time: 2.0s | Buffer: 2"])
 			1:
 				tooltip_pos = Vector2(mrna_xs[0], mrna_ys[0]) + Vector2(20, -30)
-				lines = PackedStringArray(["Enzyme Protein", "8 Amino Acids -> Enzyme", "Time: 2.0s each"])
+				lines = PackedStringArray(["Zymase Protein", "8 Amino Acids -> Zymase", "Time: 2.0s each"])
 			2:
 				tooltip_pos = Vector2(mrna_xs[1], mrna_ys[1]) + Vector2(20, -30)
 				lines = PackedStringArray(["Motor Protein", "7 Amino Acids -> Motor", "Time: 2.0s each"])

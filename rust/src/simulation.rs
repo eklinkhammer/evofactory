@@ -18,8 +18,8 @@ const PICK_RADIUS: f32 = 18.0;
 const MIN_RADIUS: f32 = 15.0;
 const VELOCITY_THRESHOLD: f32 = 5.0;
 const INTERIOR_RADIUS: f32 = 200.0;
-const ENZYME_RADIUS: f32 = 15.0;
-const ENZYME_COLLISION_DIST: f32 = 20.0;
+const ZYMASE_RADIUS: f32 = 15.0;
+const ZYMASE_COLLISION_DIST: f32 = 20.0;
 const MOTOR_COLLISION_DIST: f32 = 25.0;
 const MOTOR_ANGLE: f32 = 0.0;
 const MOTOR_MEMBRANE_RADIUS: f32 = INTERIOR_RADIUS;
@@ -28,11 +28,11 @@ const MRNA_DIST: f32 = 70.0;
 const MRNA_COLLISION_DIST: f32 = 20.0;
 const MRNA_REQUIRED: [i32; MRNA_COUNT] = [8, 7, 5];
 const GLUCOSE_MIN_SEP: f32 = 12.0;
-const ENZYME_CRAFT_TIME: f32 = 2.0;
-const ENZYME_BUFFER_SIZE: i32 = 2;
+const ZYMASE_CRAFT_TIME: f32 = 2.0;
+const ZYMASE_BUFFER_SIZE: i32 = 2;
 const MRNA_CRAFT_TIME: f32 = 2.0;
 const MRNA_ANGLES: [f32; MRNA_COUNT] = [
-    150.0 * std::f32::consts::PI / 180.0,  // enzyme — upper-left
+    150.0 * std::f32::consts::PI / 180.0,  // zymase — upper-left
     270.0 * std::f32::consts::PI / 180.0,  // motor  — bottom
     30.0 * std::f32::consts::PI / 180.0,   // membrane — upper-right
 ];
@@ -48,6 +48,14 @@ struct Resource {
     y: f32,
     resource_type: i32, // 0 = glucose, 1 = amino acid
     amount: f32,
+}
+
+struct Zymase {
+    x: f32,
+    y: f32,
+    buffer: i32,
+    processing: bool,
+    timer: f32,
 }
 
 struct Motor {
@@ -111,8 +119,20 @@ pub struct Simulation {
     #[var]
     interior_radius: f32,
 
-    enzyme_x: f32,
-    enzyme_y: f32,
+    zymases: Vec<Zymase>,
+    #[var]
+    zymase_xs: PackedFloat32Array,
+    #[var]
+    zymase_ys: PackedFloat32Array,
+    #[var]
+    zymase_buffers: PackedInt32Array,
+    #[var]
+    zymase_processing_flags: PackedInt32Array,
+    #[var]
+    zymase_timers: PackedFloat32Array,
+    #[var]
+    zymase_count: i32,
+    dragged_zymase_index: Option<usize>,
 
     motors: Vec<Motor>,
     #[var]
@@ -125,14 +145,9 @@ pub struct Simulation {
     motor_count: i32,
     dragged_motor_index: Option<usize>,
     dragged_mrna_index: Option<usize>,
-    dragged_enzyme: bool,
 
     #[var]
-    enzyme_interior_x: f32,
-    #[var]
-    enzyme_interior_y: f32,
-    #[var]
-    enzyme_interior_radius: f32,
+    zymase_interior_radius: f32,
     #[var]
     motor_interior_x: f32,
     #[var]
@@ -157,13 +172,6 @@ pub struct Simulation {
     mrna_required: PackedInt32Array,
     #[var]
     amino_acid_particle_count: i32,
-
-    #[var]
-    enzyme_buffer: i32,
-    #[var]
-    enzyme_processing: bool,
-    #[var]
-    enzyme_timer: f32,
 
     mrna_processing: [bool; MRNA_COUNT],
     mrna_timers: [f32; MRNA_COUNT],
@@ -212,8 +220,14 @@ impl INode for Simulation {
             interior_types: PackedInt32Array::new(),
             interior_radius: INTERIOR_RADIUS,
 
-            enzyme_x: 0.0,
-            enzyme_y: 0.0,
+            zymases: vec![Zymase { x: 0.0, y: 0.0, buffer: 0, processing: false, timer: 0.0 }],
+            zymase_xs: PackedFloat32Array::new(),
+            zymase_ys: PackedFloat32Array::new(),
+            zymase_buffers: PackedInt32Array::new(),
+            zymase_processing_flags: PackedInt32Array::new(),
+            zymase_timers: PackedFloat32Array::new(),
+            zymase_count: 1,
+            dragged_zymase_index: None,
 
             motors: vec![Motor {
                 x: MOTOR_ANGLE.cos() * MOTOR_MEMBRANE_RADIUS,
@@ -226,11 +240,8 @@ impl INode for Simulation {
             motor_count: 1,
             dragged_motor_index: None,
             dragged_mrna_index: None,
-            dragged_enzyme: false,
 
-            enzyme_interior_x: 0.0,
-            enzyme_interior_y: 0.0,
-            enzyme_interior_radius: ENZYME_RADIUS,
+            zymase_interior_radius: ZYMASE_RADIUS,
             motor_interior_x: MOTOR_ANGLE.cos() * INTERIOR_RADIUS,
             motor_interior_y: MOTOR_ANGLE.sin() * INTERIOR_RADIUS,
             atp_particle_count: 0,
@@ -245,9 +256,6 @@ impl INode for Simulation {
             mrna_required: PackedInt32Array::from(&MRNA_REQUIRED[..]),
             amino_acid_particle_count: 0,
 
-            enzyme_buffer: 0,
-            enzyme_processing: false,
-            enzyme_timer: 0.0,
             mrna_processing: [false; MRNA_COUNT],
             mrna_timers: [0.0; MRNA_COUNT],
             mrna_processing_flags: PackedInt32Array::from(&[0i32; MRNA_COUNT][..]),
@@ -303,6 +311,23 @@ impl Simulation {
         let total_charge: f32 = self.motors.iter().map(|m| m.charge).sum();
         self.motor_charge_display = total_charge;
         self.player_max_atp = MAX_ATP * self.motors.len() as f32;
+    }
+
+    fn sync_zymase_arrays(&mut self) {
+        self.zymase_xs = PackedFloat32Array::new();
+        self.zymase_ys = PackedFloat32Array::new();
+        self.zymase_buffers = PackedInt32Array::new();
+        self.zymase_processing_flags = PackedInt32Array::new();
+        self.zymase_timers = PackedFloat32Array::new();
+
+        for e in &self.zymases {
+            self.zymase_xs.push(e.x);
+            self.zymase_ys.push(e.y);
+            self.zymase_buffers.push(e.buffer);
+            self.zymase_processing_flags.push(if e.processing { 1 } else { 0 });
+            self.zymase_timers.push(e.timer);
+        }
+        self.zymase_count = self.zymases.len() as i32;
     }
 
     #[func]
@@ -526,12 +551,12 @@ impl Simulation {
             }
         }
 
-        // Sync dragged enzyme position
-        if self.dragged_enzyme {
-            self.enzyme_interior_x = self.dragged_particle_x;
-            self.enzyme_interior_y = self.dragged_particle_y;
-            self.enzyme_x = self.dragged_particle_x;
-            self.enzyme_y = self.dragged_particle_y;
+        // Sync dragged zymase position
+        if let Some(ei) = self.dragged_zymase_index {
+            if ei < self.zymases.len() {
+                self.zymases[ei].x = self.dragged_particle_x;
+                self.zymases[ei].y = self.dragged_particle_y;
+            }
         }
 
         // Sync dragged mRNA position
@@ -581,23 +606,27 @@ impl Simulation {
             }
         }
 
-        // Enzyme timed crafting
-        if self.enzyme_processing {
-            self.enzyme_timer -= dt;
-            if self.enzyme_timer <= 0.0 {
-                for _ in 0..FERMENTATION_YIELD as i32 {
-                    self.interior_particles.push(InteriorParticle {
-                        x: self.enzyme_x + rng.gen_range(-10.0..10.0),
-                        y: self.enzyme_y + rng.gen_range(-10.0..10.0),
-                        resource_type: 2,
-                    });
-                }
-                self.enzyme_processing = false;
-                self.enzyme_timer = 0.0;
-                if self.enzyme_buffer > 0 {
-                    self.enzyme_buffer -= 1;
-                    self.enzyme_processing = true;
-                    self.enzyme_timer = ENZYME_CRAFT_TIME;
+        // Zymase timed crafting (all zymases)
+        for ei in 0..self.zymases.len() {
+            if self.zymases[ei].processing {
+                self.zymases[ei].timer -= dt;
+                if self.zymases[ei].timer <= 0.0 {
+                    let ex = self.zymases[ei].x;
+                    let ey = self.zymases[ei].y;
+                    for _ in 0..FERMENTATION_YIELD as i32 {
+                        self.interior_particles.push(InteriorParticle {
+                            x: ex + rng.gen_range(-10.0..10.0),
+                            y: ey + rng.gen_range(-10.0..10.0),
+                            resource_type: 2,
+                        });
+                    }
+                    self.zymases[ei].processing = false;
+                    self.zymases[ei].timer = 0.0;
+                    if self.zymases[ei].buffer > 0 {
+                        self.zymases[ei].buffer -= 1;
+                        self.zymases[ei].processing = true;
+                        self.zymases[ei].timer = ZYMASE_CRAFT_TIME;
+                    }
                 }
             }
         }
@@ -610,7 +639,18 @@ impl Simulation {
                     self.mrna_processing[m] = false;
                     self.mrna_timers[m] = 0.0;
                     self.mrna_progress_internal[m] = 0;
-                    if m == 1 {
+                    if m == 0 {
+                        // Spawn new zymase near the zymase mRNA
+                        let spawn_x = self.mrna_xs[0] as f32;
+                        let spawn_y = self.mrna_ys[0] as f32;
+                        self.zymases.push(Zymase {
+                            x: spawn_x,
+                            y: spawn_y,
+                            buffer: 0,
+                            processing: false,
+                            timer: 0.0,
+                        });
+                    } else if m == 1 {
                         let spawn_angle = MRNA_ANGLES[1];
                         self.motors.push(Motor {
                             x: spawn_angle.cos() * MOTOR_MEMBRANE_RADIUS,
@@ -651,6 +691,7 @@ impl Simulation {
         self.sync_packed_arrays();
         self.sync_interior_arrays();
         self.sync_motor_arrays();
+        self.sync_zymase_arrays();
         self.sync_mrna_progress();
         self.sync_crafting_state();
     }
@@ -679,7 +720,7 @@ impl Simulation {
         enum PickTarget {
             Particle(usize),
             Motor(usize),
-            Enzyme,
+            Zymase(usize),
             Mrna(usize),
         }
         let mut best: Option<PickTarget> = None;
@@ -706,14 +747,14 @@ impl Simulation {
             }
         }
 
-        // Check enzyme
-        {
-            let dx = self.enzyme_interior_x - x;
-            let dy = self.enzyme_interior_y - y;
+        // Check zymases
+        for (i, e) in self.zymases.iter().enumerate() {
+            let dx = e.x - x;
+            let dy = e.y - y;
             let dist = (dx * dx + dy * dy).sqrt();
             if dist < best_dist {
                 best_dist = dist;
-                best = Some(PickTarget::Enzyme);
+                best = Some(PickTarget::Zymase(i));
             }
         }
 
@@ -731,7 +772,7 @@ impl Simulation {
         // Clear all drag states
         self.dragged_particle_index = None;
         self.dragged_motor_index = None;
-        self.dragged_enzyme = false;
+        self.dragged_zymase_index = None;
         self.dragged_mrna_index = None;
 
         match best {
@@ -751,10 +792,10 @@ impl Simulation {
                 self.dragged_particle_type = self.interior_particles[idx].resource_type;
                 true
             }
-            Some(PickTarget::Enzyme) => {
-                self.dragged_enzyme = true;
-                self.dragged_particle_x = self.enzyme_interior_x;
-                self.dragged_particle_y = self.enzyme_interior_y;
+            Some(PickTarget::Zymase(ei)) => {
+                self.dragged_zymase_index = Some(ei);
+                self.dragged_particle_x = self.zymases[ei].x;
+                self.dragged_particle_y = self.zymases[ei].y;
                 self.drag_active = true;
                 self.dragged_particle_type = 4;
                 true
@@ -775,7 +816,7 @@ impl Simulation {
     fn drag_particle(&mut self, x: f32, y: f32) {
         if self.dragged_particle_index.is_none()
             && self.dragged_motor_index.is_none()
-            && !self.dragged_enzyme
+            && self.dragged_zymase_index.is_none()
             && self.dragged_mrna_index.is_none()
         {
             return;
@@ -787,7 +828,7 @@ impl Simulation {
             self.dragged_particle_x = angle.cos() * MOTOR_MEMBRANE_RADIUS;
             self.dragged_particle_y = angle.sin() * MOTOR_MEMBRANE_RADIUS;
         } else {
-            // Clamp to membrane interior (particles, enzyme, mRNA)
+            // Clamp to membrane interior (particles, zymase, mRNA)
             let dist = (x * x + y * y).sqrt();
             let max_r = INTERIOR_RADIUS * 0.9;
             if dist > max_r {
@@ -817,13 +858,13 @@ impl Simulation {
             return;
         }
 
-        // Enzyme drop: finalize position
-        if self.dragged_enzyme {
-            self.enzyme_interior_x = self.dragged_particle_x;
-            self.enzyme_interior_y = self.dragged_particle_y;
-            self.enzyme_x = self.dragged_particle_x;
-            self.enzyme_y = self.dragged_particle_y;
-            self.dragged_enzyme = false;
+        // Zymase drop: finalize position
+        if let Some(ei) = self.dragged_zymase_index {
+            if ei < self.zymases.len() {
+                self.zymases[ei].x = self.dragged_particle_x;
+                self.zymases[ei].y = self.dragged_particle_y;
+            }
+            self.dragged_zymase_index = None;
             self.drag_active = false;
             self.dragged_particle_type = -1;
             return;
@@ -856,18 +897,26 @@ impl Simulation {
 
         // Check drop targets
         if p_type == 0 {
-            // Glucose on enzyme? → buffer for timed crafting
-            let dx = x - self.enzyme_x;
-            let dy = y - self.enzyme_y;
-            let dist = (dx * dx + dy * dy).sqrt();
-            if dist < ENZYME_COLLISION_DIST && self.enzyme_buffer < ENZYME_BUFFER_SIZE {
+            // Glucose on zymase? → find nearest zymase within range with buffer space
+            let mut best_zymase: Option<usize> = None;
+            let mut best_zymase_dist = ZYMASE_COLLISION_DIST;
+            for (i, e) in self.zymases.iter().enumerate() {
+                let dx = x - e.x;
+                let dy = y - e.y;
+                let dist = (dx * dx + dy * dy).sqrt();
+                if dist < best_zymase_dist && e.buffer < ZYMASE_BUFFER_SIZE {
+                    best_zymase_dist = dist;
+                    best_zymase = Some(i);
+                }
+            }
+            if let Some(ei) = best_zymase {
                 self.player_glucose -= 1.0;
                 self.interior_particles.swap_remove(idx);
-                self.enzyme_buffer += 1;
-                if !self.enzyme_processing {
-                    self.enzyme_buffer -= 1;
-                    self.enzyme_processing = true;
-                    self.enzyme_timer = ENZYME_CRAFT_TIME;
+                self.zymases[ei].buffer += 1;
+                if !self.zymases[ei].processing {
+                    self.zymases[ei].buffer -= 1;
+                    self.zymases[ei].processing = true;
+                    self.zymases[ei].timer = ZYMASE_CRAFT_TIME;
                 }
             }
         } else if p_type == 1 {
@@ -938,7 +987,7 @@ impl Simulation {
     fn cancel_drag(&mut self) {
         self.dragged_particle_index = None;
         self.dragged_motor_index = None;
-        self.dragged_enzyme = false;
+        self.dragged_zymase_index = None;
         self.dragged_mrna_index = None;
         self.drag_active = false;
         self.dragged_particle_type = -1;
@@ -963,25 +1012,19 @@ impl Simulation {
         self.amino_acid_particle_count = 0;
         self.mrna_progress_internal = [0; MRNA_COUNT];
         self.mrna_progress = PackedInt32Array::from(&[0i32; MRNA_COUNT][..]);
-        self.enzyme_buffer = 0;
-        self.enzyme_processing = false;
-        self.enzyme_timer = 0.0;
+        self.zymases = vec![Zymase { x: 0.0, y: 0.0, buffer: 0, processing: false, timer: 0.0 }];
+        self.dragged_zymase_index = None;
         self.mrna_processing = [false; MRNA_COUNT];
         self.mrna_timers = [0.0; MRNA_COUNT];
         self.interior_view = false;
         self.interior_particles.clear();
         self.dragged_particle_index = None;
         self.dragged_motor_index = None;
-        self.dragged_enzyme = false;
         self.dragged_mrna_index = None;
         self.dragged_particle_x = 0.0;
         self.dragged_particle_y = 0.0;
         self.drag_active = false;
         self.dragged_particle_type = -1;
-        self.enzyme_interior_x = 0.0;
-        self.enzyme_interior_y = 0.0;
-        self.enzyme_x = 0.0;
-        self.enzyme_y = 0.0;
         self.mrna_xs = PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.cos() * MRNA_DIST)[..]);
         self.mrna_ys = PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]);
         self.mrna_types = PackedInt32Array::from(&[0i32, 1, 2][..]);
@@ -998,5 +1041,6 @@ impl Simulation {
         self.spawn_resources(count);
         self.sync_interior_arrays();
         self.sync_motor_arrays();
+        self.sync_zymase_arrays();
     }
 }
