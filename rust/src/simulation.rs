@@ -284,7 +284,8 @@ impl Simulation {
         if total_charge <= 0.0 {
             return;
         }
-        let speed = 100.0;
+        let powered_motors = self.motors.iter().filter(|m| m.charge > 0.0).count();
+        let speed = powered_motors as f32 * 10.0;
         self.velocity_x += dx * speed;
         self.velocity_y += dy * speed;
     }
