@@ -6,6 +6,7 @@ extends Node2D
 @onready var camera: Camera2D = $Camera
 
 var dragging := false
+var press_pos := Vector2.ZERO
 
 func _ready() -> void:
 	simulation.spawn_resources(60)
@@ -31,12 +32,19 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		var local_pos := interior_renderer.to_local(get_global_mouse_position())
 		if event.pressed:
+			press_pos = event.position
 			if simulation.try_pick_particle(local_pos.x, local_pos.y):
 				dragging = true
 		else:
-			if dragging:
+			var is_click: bool = event.position.distance_to(press_pos) < 5.0
+			if dragging and not is_click:
 				simulation.drop_particle(local_pos.x, local_pos.y)
 				dragging = false
+			else:
+				if dragging:
+					simulation.cancel_drag()
+					dragging = false
+				_check_tooltip_click(local_pos)
 
 	if event is InputEventMouseMotion and dragging:
 		var local_pos := interior_renderer.to_local(get_global_mouse_position())
@@ -105,3 +113,22 @@ func _process(delta: float) -> void:
 	world_renderer.queue_redraw()
 	if simulation.interior_view:
 		interior_renderer.queue_redraw()
+
+func _check_tooltip_click(local_pos: Vector2) -> void:
+	var hit := -1
+	var enzyme_pos := Vector2(simulation.enzyme_interior_x, simulation.enzyme_interior_y)
+	if local_pos.distance_to(enzyme_pos) < 20.0:
+		hit = 0
+	else:
+		var mrna_xs: PackedFloat32Array = simulation.mrna_xs
+		var mrna_ys: PackedFloat32Array = simulation.mrna_ys
+		for i in range(mrna_xs.size()):
+			if local_pos.distance_to(Vector2(mrna_xs[i], mrna_ys[i])) < 20.0:
+				hit = i + 1
+				break
+	if hit >= 0 and interior_renderer.tooltip_target == hit:
+		interior_renderer.tooltip_target = -1
+	elif hit >= 0:
+		interior_renderer.tooltip_target = hit
+	else:
+		interior_renderer.tooltip_target = -1

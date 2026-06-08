@@ -26,6 +26,9 @@ const MRNA_DIST: f32 = 70.0;
 const MRNA_COLLISION_DIST: f32 = 20.0;
 const MRNA_REQUIRED: [i32; MRNA_COUNT] = [8, 7, 5];
 const GLUCOSE_MIN_SEP: f32 = 12.0;
+const ENZYME_CRAFT_TIME: f32 = 2.0;
+const ENZYME_BUFFER_SIZE: i32 = 2;
+const MRNA_CRAFT_TIME: f32 = 2.0;
 const MRNA_ANGLES: [f32; MRNA_COUNT] = [
     150.0 * std::f32::consts::PI / 180.0,  // enzyme — upper-left
     270.0 * std::f32::consts::PI / 180.0,  // motor  — bottom
@@ -153,6 +156,20 @@ pub struct Simulation {
     #[var]
     amino_acid_particle_count: i32,
 
+    #[var]
+    enzyme_buffer: i32,
+    #[var]
+    enzyme_processing: bool,
+    #[var]
+    enzyme_timer: f32,
+
+    mrna_processing: [bool; MRNA_COUNT],
+    mrna_timers: [f32; MRNA_COUNT],
+    #[var]
+    mrna_processing_flags: PackedInt32Array,
+    #[var]
+    mrna_timers_display: PackedFloat32Array,
+
     dragged_particle_index: Option<usize>,
     #[var]
     dragged_particle_x: f32,
@@ -225,6 +242,14 @@ impl INode for Simulation {
             mrna_progress: PackedInt32Array::from(&[0i32; MRNA_COUNT][..]),
             mrna_required: PackedInt32Array::from(&MRNA_REQUIRED[..]),
             amino_acid_particle_count: 0,
+
+            enzyme_buffer: 0,
+            enzyme_processing: false,
+            enzyme_timer: 0.0,
+            mrna_processing: [false; MRNA_COUNT],
+            mrna_timers: [0.0; MRNA_COUNT],
+            mrna_processing_flags: PackedInt32Array::from(&[0i32; MRNA_COUNT][..]),
+            mrna_timers_display: PackedFloat32Array::from(&[0.0f32; MRNA_COUNT][..]),
 
             dragged_particle_index: None,
             dragged_particle_x: 0.0,
@@ -540,6 +565,47 @@ impl Simulation {
             }
         }
 
+        // Enzyme timed crafting
+        if self.enzyme_processing {
+            self.enzyme_timer -= dt;
+            if self.enzyme_timer <= 0.0 {
+                for _ in 0..FERMENTATION_YIELD as i32 {
+                    self.interior_particles.push(InteriorParticle {
+                        x: self.enzyme_x + rng.gen_range(-10.0..10.0),
+                        y: self.enzyme_y + rng.gen_range(-10.0..10.0),
+                        resource_type: 2,
+                    });
+                }
+                self.enzyme_processing = false;
+                self.enzyme_timer = 0.0;
+                if self.enzyme_buffer > 0 {
+                    self.enzyme_buffer -= 1;
+                    self.enzyme_processing = true;
+                    self.enzyme_timer = ENZYME_CRAFT_TIME;
+                }
+            }
+        }
+
+        // mRNA timed crafting (timer runs after all amino acids collected)
+        for m in 0..MRNA_COUNT {
+            if self.mrna_processing[m] {
+                self.mrna_timers[m] -= dt;
+                if self.mrna_timers[m] <= 0.0 {
+                    self.mrna_processing[m] = false;
+                    self.mrna_timers[m] = 0.0;
+                    self.mrna_progress_internal[m] = 0;
+                    if m == 1 {
+                        let spawn_angle = MRNA_ANGLES[1];
+                        self.motors.push(Motor {
+                            x: spawn_angle.cos() * MOTOR_MEMBRANE_RADIUS,
+                            y: spawn_angle.sin() * MOTOR_MEMBRANE_RADIUS,
+                            charge: 0.0,
+                        });
+                    }
+                }
+            }
+        }
+
         // Count particles for HUD
         let mut atp_count = 0;
         let mut glucose_count = 0;
@@ -570,6 +636,16 @@ impl Simulation {
         self.sync_interior_arrays();
         self.sync_motor_arrays();
         self.sync_mrna_progress();
+        self.sync_crafting_state();
+    }
+
+    fn sync_crafting_state(&mut self) {
+        self.mrna_processing_flags = PackedInt32Array::new();
+        self.mrna_timers_display = PackedFloat32Array::new();
+        for m in 0..MRNA_COUNT {
+            self.mrna_processing_flags.push(if self.mrna_processing[m] { 1 } else { 0 });
+            self.mrna_timers_display.push(self.mrna_timers[m]);
+        }
     }
 
     fn sync_mrna_progress(&mut self) {
@@ -761,26 +837,21 @@ impl Simulation {
         }
 
         let p_type = self.interior_particles[idx].resource_type;
-        let mut rng = rand::thread_rng();
 
         // Check drop targets
         if p_type == 0 {
-            // Glucose on enzyme?
+            // Glucose on enzyme? → buffer for timed crafting
             let dx = x - self.enzyme_x;
             let dy = y - self.enzyme_y;
             let dist = (dx * dx + dy * dy).sqrt();
-            if dist < ENZYME_COLLISION_DIST {
-                // Convert glucose → ATP
+            if dist < ENZYME_COLLISION_DIST && self.enzyme_buffer < ENZYME_BUFFER_SIZE {
                 self.player_glucose -= 1.0;
-                self.interior_particles[idx].resource_type = 2;
-                // Spawn extra ATP particles for fermentation yield
-                let extra = (FERMENTATION_YIELD as i32) - 1;
-                for _ in 0..extra {
-                    self.interior_particles.push(InteriorParticle {
-                        x: self.enzyme_x + rng.gen_range(-10.0..10.0),
-                        y: self.enzyme_y + rng.gen_range(-10.0..10.0),
-                        resource_type: 2,
-                    });
+                self.interior_particles.swap_remove(idx);
+                self.enzyme_buffer += 1;
+                if !self.enzyme_processing {
+                    self.enzyme_buffer -= 1;
+                    self.enzyme_processing = true;
+                    self.enzyme_timer = ENZYME_CRAFT_TIME;
                 }
             }
         } else if p_type == 1 {
@@ -791,21 +862,17 @@ impl Simulation {
                 let dx = x - mrna_x;
                 let dy = y - mrna_y;
                 let dist = (dx * dx + dy * dy).sqrt();
-                if dist < MRNA_COLLISION_DIST && self.mrna_progress_internal[m] < MRNA_REQUIRED[m] {
+                if dist < MRNA_COLLISION_DIST
+                    && self.mrna_progress_internal[m] < MRNA_REQUIRED[m]
+                    && !self.mrna_processing[m]
+                {
                     self.mrna_progress_internal[m] += 1;
                     self.interior_particles.swap_remove(idx);
-
-                    // Check if motor mRNA (index 1) completed — build new motor
-                    if m == 1 && self.mrna_progress_internal[1] >= MRNA_REQUIRED[1] {
-                        let spawn_angle = MRNA_ANGLES[1]; // 270° bottom
-                        self.motors.push(Motor {
-                            x: spawn_angle.cos() * MOTOR_MEMBRANE_RADIUS,
-                            y: spawn_angle.sin() * MOTOR_MEMBRANE_RADIUS,
-                            charge: 0.0,
-                        });
-                        self.mrna_progress_internal[1] = 0;
+                    // All amino acids collected → start craft timer
+                    if self.mrna_progress_internal[m] >= MRNA_REQUIRED[m] {
+                        self.mrna_processing[m] = true;
+                        self.mrna_timers[m] = MRNA_CRAFT_TIME;
                     }
-
                     break;
                 }
             }
@@ -880,6 +947,11 @@ impl Simulation {
         self.amino_acid_particle_count = 0;
         self.mrna_progress_internal = [0; MRNA_COUNT];
         self.mrna_progress = PackedInt32Array::from(&[0i32; MRNA_COUNT][..]);
+        self.enzyme_buffer = 0;
+        self.enzyme_processing = false;
+        self.enzyme_timer = 0.0;
+        self.mrna_processing = [false; MRNA_COUNT];
+        self.mrna_timers = [0.0; MRNA_COUNT];
         self.interior_view = false;
         self.interior_particles.clear();
         self.dragged_particle_index = None;

@@ -3,6 +3,7 @@ extends Node2D
 @onready var simulation: Node = get_node("../Simulation")
 
 var hovered_index: int = -1
+var tooltip_target: int = -1  # -1=none, 0=enzyme, 1/2/3=mRNA indices
 
 func _ready() -> void:
 	z_index = 1
@@ -32,6 +33,26 @@ func _draw() -> void:
 
 	draw_circle(enzyme_pos, enzyme_r, Color(0.2, 0.5, 0.2))
 	draw_arc(enzyme_pos, enzyme_r, 0, TAU, 6, Color(0.4, 0.9, 0.4), 2.0)
+
+	var font := ThemeDB.fallback_font
+	var font_size := 10
+
+	# Enzyme label
+	draw_string(font, enzyme_pos + Vector2(-15, enzyme_r + 14), "Enzyme", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.4, 0.9, 0.4, 0.6))
+
+	# Enzyme processing progress arc
+	if simulation.enzyme_processing:
+		var progress: float = 1.0 - simulation.enzyme_timer / 2.0
+		draw_arc(enzyme_pos, enzyme_r + 6.0, -PI / 2, -PI / 2 + progress * TAU, 32, Color(0.4, 1.0, 0.4, 0.8), 2.5)
+
+	# Enzyme buffer pips
+	for b in range(2):
+		var pip_pos := enzyme_pos + Vector2(-5.0 + b * 10.0, enzyme_r + 24)
+		if b < simulation.enzyme_buffer:
+			draw_circle(pip_pos, 3.0, Color(0.95, 0.75, 0.2))
+		else:
+			draw_circle(pip_pos, 3.0, Color(0.3, 0.3, 0.3))
+			draw_arc(pip_pos, 3.0, 0, TAU, 8, Color(0.5, 0.5, 0.5), 1.0)
 
 	# Membrane motors (multiple)
 	var m_xs: PackedFloat32Array = simulation.motor_xs
@@ -78,6 +99,9 @@ func _draw() -> void:
 	var mrna_xs: PackedFloat32Array = simulation.mrna_xs
 	var mrna_ys: PackedFloat32Array = simulation.mrna_ys
 	var mrna_types: PackedInt32Array = simulation.mrna_types
+	var mrna_names := ["Enzyme", "Motor", "Membrane"]
+	var mrna_proc: PackedInt32Array = simulation.mrna_processing_flags
+	var mrna_tmrs: PackedFloat32Array = simulation.mrna_timers_display
 	var mrna_colors: Array[Color] = [
 		Color(0.3, 0.8, 0.3),   # enzyme — green
 		Color(1.0, 0.6, 0.2),   # motor — orange
@@ -125,6 +149,14 @@ func _draw() -> void:
 			if prog >= req:
 				draw_arc(center, 14.0, 0, TAU, 24, col, 2.5)
 
+		# mRNA label
+		draw_string(font, center + Vector2(-15, 22), mrna_names[i], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(col.r, col.g, col.b, 0.6))
+
+		# mRNA processing progress arc
+		if i < mrna_proc.size() and mrna_proc[i] == 1:
+			var tprog: float = 1.0 - mrna_tmrs[i] / 2.0
+			draw_arc(center, 16.0, -PI / 2, -PI / 2 + tprog * TAU, 32, Color(col.r, col.g, col.b, 0.8), 2.5)
+
 	# Interior particles
 	var xs: PackedFloat32Array = simulation.interior_xs
 	var ys: PackedFloat32Array = simulation.interior_ys
@@ -158,3 +190,33 @@ func _draw() -> void:
 			3: drag_col = Color(1.0, 0.6, 0.2)  # motor orange
 			_: drag_col = Color.WHITE
 		draw_arc(drag_pos, 9.0, 0, TAU, 16, drag_col, 2.5)
+
+	# Tooltip
+	if tooltip_target >= 0:
+		var tooltip_pos: Vector2
+		var lines: PackedStringArray
+		match tooltip_target:
+			0:
+				tooltip_pos = enzyme_pos + Vector2(20, -30)
+				lines = PackedStringArray(["Fermentation", "1 Glucose -> 2 ATP", "Time: 2.0s | Buffer: 2"])
+			1:
+				tooltip_pos = Vector2(mrna_xs[0], mrna_ys[0]) + Vector2(20, -30)
+				lines = PackedStringArray(["Enzyme Protein", "8 Amino Acids -> Enzyme", "Time: 2.0s each"])
+			2:
+				tooltip_pos = Vector2(mrna_xs[1], mrna_ys[1]) + Vector2(20, -30)
+				lines = PackedStringArray(["Motor Protein", "7 Amino Acids -> Motor", "Time: 2.0s each"])
+			3:
+				tooltip_pos = Vector2(mrna_xs[2], mrna_ys[2]) + Vector2(20, -30)
+				lines = PackedStringArray(["Membrane Protein", "5 Amino Acids -> Membrane", "Time: 2.0s each"])
+		if lines.size() > 0:
+			var line_h := 14
+			var padding := Vector2(6, 4)
+			var max_width := 0.0
+			for line in lines:
+				var w: float = font.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+				max_width = max(max_width, w)
+			var box_size := Vector2(max_width + padding.x * 2, lines.size() * line_h + padding.y * 2)
+			draw_rect(Rect2(tooltip_pos, box_size), Color(0.0, 0.0, 0.0, 0.85))
+			draw_rect(Rect2(tooltip_pos, box_size), Color(0.5, 0.5, 0.5, 0.5), false, 1.0)
+			for li in range(lines.size()):
+				draw_string(font, tooltip_pos + Vector2(padding.x, padding.y + (li + 1) * line_h - 2), lines[li], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color.WHITE)
