@@ -27,6 +27,11 @@ const MRNA_COUNT: usize = 3;
 const MRNA_DIST: f32 = 70.0;
 const MRNA_COLLISION_DIST: f32 = 20.0;
 const MRNA_REQUIRED: [i32; MRNA_COUNT] = [8, 7, 5];
+const GROWTH_PER_MEMBRANE: f32 = 5.0;
+const MAX_RADIUS: f32 = 40.0;
+const BASE_MAX_GLUCOSE: i32 = 5;
+const BASE_MAX_AMINO: i32 = 5;
+const BASE_MAX_MOTORS: usize = 3;
 const GLUCOSE_MIN_SEP: f32 = 12.0;
 const ZYMASE_CRAFT_TIME: f32 = 2.0;
 const ZYMASE_BUFFER_SIZE: i32 = 2;
@@ -180,6 +185,8 @@ pub struct Simulation {
     #[var]
     mrna_timers_display: PackedFloat32Array,
 
+    expansion_count: i32,
+
     dragged_particle_index: Option<usize>,
     #[var]
     dragged_particle_x: f32,
@@ -260,6 +267,8 @@ impl INode for Simulation {
             mrna_timers: [0.0; MRNA_COUNT],
             mrna_processing_flags: PackedInt32Array::from(&[0i32; MRNA_COUNT][..]),
             mrna_timers_display: PackedFloat32Array::from(&[0.0f32; MRNA_COUNT][..]),
+
+            expansion_count: 0,
 
             dragged_particle_index: None,
             dragged_particle_x: 0.0,
@@ -454,6 +463,19 @@ impl Simulation {
         let pickup_dist_sq = pickup_dist * pickup_dist;
         let mut respawn_indices = Vec::new();
 
+        // Count current interior particles for capacity limits
+        let mut cur_glucose = 0i32;
+        let mut cur_amino = 0i32;
+        for p in &self.interior_particles {
+            match p.resource_type {
+                0 => cur_glucose += 1,
+                1 => cur_amino += 1,
+                _ => {}
+            }
+        }
+        let max_glucose = BASE_MAX_GLUCOSE + self.expansion_count;
+        let max_amino = BASE_MAX_AMINO + self.expansion_count;
+
         for (i, r) in self.resources.iter().enumerate() {
             let dx = self.player_x - r.x;
             let dy = self.player_y - r.y;
@@ -474,6 +496,8 @@ impl Simulation {
 
                 match r.resource_type {
                     0 => {
+                        if cur_glucose >= max_glucose { continue; }
+                        cur_glucose += 1;
                         self.player_glucose += r.amount;
                         // Push existing glucose away from entry point
                         for p in self.interior_particles.iter_mut() {
@@ -501,6 +525,8 @@ impl Simulation {
                         });
                     }
                     1 => {
+                        if cur_amino >= max_amino { continue; }
+                        cur_amino += 1;
                         self.player_amino_acids += r.amount;
                         self.interior_particles.push(InteriorParticle {
                             x: entry_x,
@@ -651,12 +677,18 @@ impl Simulation {
                             timer: 0.0,
                         });
                     } else if m == 1 {
-                        let spawn_angle = MRNA_ANGLES[1];
-                        self.motors.push(Motor {
-                            x: spawn_angle.cos() * MOTOR_MEMBRANE_RADIUS,
-                            y: spawn_angle.sin() * MOTOR_MEMBRANE_RADIUS,
-                            charge: 0.0,
-                        });
+                        let max_motors = BASE_MAX_MOTORS + (self.expansion_count / 5) as usize;
+                        if self.motors.len() < max_motors {
+                            let spawn_angle = MRNA_ANGLES[1];
+                            self.motors.push(Motor {
+                                x: spawn_angle.cos() * MOTOR_MEMBRANE_RADIUS,
+                                y: spawn_angle.sin() * MOTOR_MEMBRANE_RADIUS,
+                                charge: 0.0,
+                            });
+                        }
+                    } else if m == 2 {
+                        self.player_radius = (self.player_radius + GROWTH_PER_MEMBRANE).min(MAX_RADIUS);
+                        self.expansion_count += 1;
                     }
                 }
             }
@@ -998,6 +1030,7 @@ impl Simulation {
         self.player_x = 0.0;
         self.player_y = 0.0;
         self.player_radius = MIN_RADIUS;
+        self.expansion_count = 0;
         self.player_atp = STARTING_ATP;
         self.player_max_atp = MAX_ATP;
         self.player_alive = true;
