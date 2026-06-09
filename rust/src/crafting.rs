@@ -10,8 +10,6 @@ pub const MRNA_COLLISION_DIST: f32 = 20.0;
 pub const MOTOR_COLLISION_DIST: f32 = 25.0;
 pub const FERMENTATION_YIELD: f32 = 2.0;
 pub const GROWTH_SCALE: f32 = 8.0;
-pub const MOTOR_SCALE: f32 = 0.5;
-pub const BASE_MAX_MOTORS: usize = 3;
 pub const MRNA_ANGLES: [f32; MRNA_COUNT] = [
     150.0 * std::f32::consts::PI / 180.0, // zymase — upper-left
     270.0 * std::f32::consts::PI / 180.0, // motor  — bottom
@@ -44,6 +42,7 @@ pub fn find_zymase_target(x: f32, y: f32, zymases: &[Zymase]) -> Option<usize> {
 }
 
 /// Find nearest mRNA strand that accepts amino acids.
+/// Strands flagged in `suppressions` are skipped entirely.
 pub fn find_mrna_target(
     x: f32,
     y: f32,
@@ -51,10 +50,14 @@ pub fn find_mrna_target(
     mrna_ys: &[f32],
     progress: &[i32; MRNA_COUNT],
     processing: &[bool; MRNA_COUNT],
+    suppressions: &[bool; MRNA_COUNT],
 ) -> Option<usize> {
     let mut best: Option<usize> = None;
     let mut best_dist = MRNA_COLLISION_DIST;
     for m in 0..MRNA_COUNT {
+        if suppressions[m] {
+            continue;
+        }
         let dx = x - mrna_xs[m];
         let dy = y - mrna_ys[m];
         let dist = (dx * dx + dy * dy).sqrt();
@@ -157,14 +160,15 @@ pub fn tick_zymases(zymases: &mut [Zymase], dt: f32, rng: &mut impl Rng) -> Vec<
 }
 
 /// Tick all mRNA strands. Returns spawn commands for completed crafts.
+/// Strands flagged in `suppressions` skip output on completion (safety net
+/// for the edge case where suppression activates mid-craft).
 pub fn tick_mrna(
     processing: &mut [bool; MRNA_COUNT],
     timers: &mut [f32; MRNA_COUNT],
     progress: &mut [i32; MRNA_COUNT],
     mrna_xs: &[f32],
     mrna_ys: &[f32],
-    motor_count: usize,
-    expansion_count: i32,
+    suppressions: &[bool; MRNA_COUNT],
     dt: f32,
 ) -> Vec<CraftOutput> {
     let mut outputs = Vec::new();
@@ -175,19 +179,18 @@ pub fn tick_mrna(
                 processing[m] = false;
                 timers[m] = 0.0;
                 progress[m] = 0;
+                if suppressions[m] {
+                    continue;
+                }
                 if m == 0 {
                     outputs.push(CraftOutput::SpawnZymase {
                         x: mrna_xs[0],
                         y: mrna_ys[0],
                     });
                 } else if m == 1 {
-                    let max_motors =
-                        BASE_MAX_MOTORS + (MOTOR_SCALE * (expansion_count as f32).sqrt()) as usize;
-                    if motor_count < max_motors {
-                        outputs.push(CraftOutput::SpawnMotor {
-                            angle: MRNA_ANGLES[1],
-                        });
-                    }
+                    outputs.push(CraftOutput::SpawnMotor {
+                        angle: MRNA_ANGLES[1],
+                    });
                 } else if m == 2 {
                     outputs.push(CraftOutput::GrowCell);
                 }
@@ -212,6 +215,7 @@ pub fn auto_consume(
     motors: &mut [Motor],
     dragged_index: Option<usize>,
     player_glucose: &mut f32,
+    suppressions: &[bool; MRNA_COUNT],
 ) -> Vec<usize> {
     // Phase 1: detect candidates
     let mut consumed: Vec<usize> = Vec::new();
@@ -233,8 +237,11 @@ pub fn auto_consume(
                 }
             }
             1 => {
-                // Amino acid → incomplete, non-processing mRNA
+                // Amino acid → incomplete, non-processing, non-suppressed mRNA
                 for m in 0..MRNA_COUNT {
+                    if suppressions[m] {
+                        continue;
+                    }
                     let dx = p.x - mrna_xs[m];
                     let dy = p.y - mrna_ys[m];
                     let dist = (dx * dx + dy * dy).sqrt();
@@ -277,7 +284,7 @@ pub fn auto_consume(
             }
             1 => {
                 if let Some(m) =
-                    find_mrna_target(p.x, p.y, mrna_xs, mrna_ys, mrna_progress, mrna_processing)
+                    find_mrna_target(p.x, p.y, mrna_xs, mrna_ys, mrna_progress, mrna_processing, suppressions)
                 {
                     feed_mrna(m, mrna_progress, mrna_processing, mrna_timers);
                     actually_consumed.push(i);
@@ -426,8 +433,9 @@ mod tests {
         let mut progress = [MRNA_REQUIRED[0], 0, 0];
         let mrna_xs = [10.0, 20.0, 30.0];
         let mrna_ys = [10.0, 20.0, 30.0];
+        let suppressions = [false; MRNA_COUNT];
         let outputs =
-            tick_mrna(&mut processing, &mut timers, &mut progress, &mrna_xs, &mrna_ys, 1, 0, 0.2);
+            tick_mrna(&mut processing, &mut timers, &mut progress, &mrna_xs, &mrna_ys, &suppressions, 0.2);
         assert_eq!(outputs.len(), 1);
         assert!(matches!(outputs[0], CraftOutput::SpawnZymase { .. }));
     }
@@ -439,28 +447,28 @@ mod tests {
         let mut progress = [0, MRNA_REQUIRED[1], 0];
         let mrna_xs = [10.0, 20.0, 30.0];
         let mrna_ys = [10.0, 20.0, 30.0];
+        let suppressions = [false; MRNA_COUNT];
         let outputs =
-            tick_mrna(&mut processing, &mut timers, &mut progress, &mrna_xs, &mrna_ys, 1, 0, 0.2);
+            tick_mrna(&mut processing, &mut timers, &mut progress, &mrna_xs, &mrna_ys, &suppressions, 0.2);
         assert_eq!(outputs.len(), 1);
         assert!(matches!(outputs[0], CraftOutput::SpawnMotor { .. }));
     }
 
     #[test]
-    fn tick_mrna_strand_1_respects_motor_cap() {
+    fn tick_mrna_strand_1_suppressed_skips_output() {
         let mut processing = [false, true, false];
         let mut timers = [0.0, 0.1, 0.0];
         let mut progress = [0, MRNA_REQUIRED[1], 0];
         let mrna_xs = [10.0, 20.0, 30.0];
         let mrna_ys = [10.0, 20.0, 30.0];
-        // motor_count == max
+        let suppressions = [false, true, false];
         let outputs = tick_mrna(
             &mut processing,
             &mut timers,
             &mut progress,
             &mrna_xs,
             &mrna_ys,
-            BASE_MAX_MOTORS,
-            0,
+            &suppressions,
             0.2,
         );
         assert!(outputs.is_empty());
@@ -473,8 +481,9 @@ mod tests {
         let mut progress = [0, 0, MRNA_REQUIRED[2]];
         let mrna_xs = [10.0, 20.0, 30.0];
         let mrna_ys = [10.0, 20.0, 30.0];
+        let suppressions = [false; MRNA_COUNT];
         let outputs =
-            tick_mrna(&mut processing, &mut timers, &mut progress, &mrna_xs, &mrna_ys, 1, 0, 0.2);
+            tick_mrna(&mut processing, &mut timers, &mut progress, &mrna_xs, &mrna_ys, &suppressions, 0.2);
         assert_eq!(outputs.len(), 1);
         assert!(matches!(outputs[0], CraftOutput::GrowCell));
     }
@@ -494,6 +503,7 @@ mod tests {
         let mut mrna_timers = [0.0; MRNA_COUNT];
         let mut motors = vec![];
         let mut player_glucose = 1.0;
+        let suppressions = [false; MRNA_COUNT];
 
         let consumed = auto_consume(
             &particles,
@@ -506,6 +516,7 @@ mod tests {
             &mut motors,
             None,
             &mut player_glucose,
+            &suppressions,
         );
         assert_eq!(consumed, vec![0]);
         assert!(zymases[0].processing);
@@ -527,6 +538,7 @@ mod tests {
         let mut mrna_timers = [0.0; MRNA_COUNT];
         let mut motors = vec![];
         let mut player_glucose = 1.0;
+        let suppressions = [false; MRNA_COUNT];
 
         let consumed = auto_consume(
             &particles,
@@ -539,8 +551,43 @@ mod tests {
             &mut motors,
             None,
             &mut player_glucose,
+            &suppressions,
         );
         assert!(consumed.is_empty());
         assert_eq!(player_glucose, 1.0);
+    }
+
+    #[test]
+    fn suppressed_strand_rejects_amino_acids() {
+        let particles = vec![InteriorParticle {
+            x: 5.0,
+            y: 0.0,
+            resource_type: 1, // amino acid
+        }];
+        let mut zymases = vec![];
+        let mrna_xs = [5.0, 100.0, 100.0]; // strand 0 is right next to particle
+        let mrna_ys = [0.0, 100.0, 100.0];
+        let mut mrna_progress = [0; MRNA_COUNT];
+        let mut mrna_processing = [false; MRNA_COUNT];
+        let mut mrna_timers = [0.0; MRNA_COUNT];
+        let mut motors = vec![];
+        let mut player_glucose = 0.0;
+        let suppressions = [true, false, false]; // strand 0 suppressed
+
+        let consumed = auto_consume(
+            &particles,
+            &mut zymases,
+            &mrna_xs,
+            &mrna_ys,
+            &mut mrna_progress,
+            &mut mrna_processing,
+            &mut mrna_timers,
+            &mut motors,
+            None,
+            &mut player_glucose,
+            &suppressions,
+        );
+        assert!(consumed.is_empty());
+        assert_eq!(mrna_progress[0], 0); // strand 0 untouched
     }
 }

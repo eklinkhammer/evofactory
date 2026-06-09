@@ -4,6 +4,7 @@ use rand::Rng;
 use crate::types::{InteriorParticle, Zymase, Motor, INTERIOR_RADIUS, MAX_ATP, MOTOR_MEMBRANE_RADIUS, RESOURCE_RADIUS, MRNA_COUNT, CAPACITY_SCALE, MIN_RADIUS};
 use crate::crafting::{self, CraftOutput};
 use crate::interior;
+use crate::rules::{self, Rule};
 
 type CellResource = crate::types::Resource;
 
@@ -141,6 +142,24 @@ pub struct Simulation {
 
     expansion_count: i32,
 
+    rules: Vec<Rule>,
+    current_suppressions: [bool; MRNA_COUNT],
+
+    #[var]
+    regulation_panel_open: bool,
+    #[var]
+    rule_count: i32,
+    #[var]
+    rule_descriptions: PackedStringArray,
+    #[var]
+    rule_firing: PackedInt32Array,
+    #[var]
+    rule_targets: PackedInt32Array,
+    #[var]
+    rule_limits: PackedInt32Array,
+    #[var]
+    mrna_suppressed: PackedInt32Array,
+
     dragged_particle_index: Option<usize>,
     #[var]
     dragged_particle_x: f32,
@@ -223,6 +242,17 @@ impl INode for Simulation {
             mrna_timers_display: PackedFloat32Array::from(&[0.0f32; MRNA_COUNT][..]),
 
             expansion_count: 0,
+
+            rules: rules::default_rules(),
+            current_suppressions: [false; MRNA_COUNT],
+
+            regulation_panel_open: false,
+            rule_count: 0,
+            rule_descriptions: PackedStringArray::new(),
+            rule_firing: PackedInt32Array::new(),
+            rule_targets: PackedInt32Array::new(),
+            rule_limits: PackedInt32Array::new(),
+            mrna_suppressed: PackedInt32Array::from(&[0i32; MRNA_COUNT][..]),
 
             dragged_particle_index: None,
             dragged_particle_x: 0.0,
@@ -521,6 +551,14 @@ impl Simulation {
         // Re-clamp particles to membrane after separation
         interior::clamp_to_membrane(&mut self.interior_particles);
 
+        // Evaluate gene regulation rules
+        self.current_suppressions = rules::evaluate_suppressions(
+            &mut self.rules,
+            self.motors.len(),
+            self.zymases.len(),
+            self.expansion_count,
+        );
+
         // Auto-consumption: particles near their target organelles are consumed
         {
             let mrna_xs = self.mrna_xs_slice();
@@ -536,6 +574,7 @@ impl Simulation {
                 &mut self.motors,
                 self.dragged_particle_index,
                 &mut self.player_glucose,
+                &self.current_suppressions,
             );
 
             // Remove consumed particles in reverse order (swap_remove safe)
@@ -571,8 +610,7 @@ impl Simulation {
                 &mut self.mrna_progress_internal,
                 &mrna_xs,
                 &mrna_ys,
-                self.motors.len(),
-                self.expansion_count,
+                &self.current_suppressions,
                 dt,
             );
             for output in mrna_outputs {
@@ -625,6 +663,7 @@ impl Simulation {
         self.sync_zymase_arrays();
         self.sync_mrna_progress();
         self.sync_crafting_state();
+        self.sync_rule_arrays();
     }
 
     fn sync_crafting_state(&mut self) {
@@ -634,6 +673,31 @@ impl Simulation {
             self.mrna_processing_flags.push(if self.mrna_processing[m] { 1 } else { 0 });
             self.mrna_timers_display.push(self.mrna_timers[m]);
         }
+    }
+
+    fn sync_rule_arrays(&mut self) {
+        self.rule_count = self.rules.len() as i32;
+        self.rule_descriptions = PackedStringArray::new();
+        self.rule_firing = PackedInt32Array::new();
+        self.rule_targets = PackedInt32Array::new();
+        self.rule_limits = PackedInt32Array::new();
+
+        for rule in &self.rules {
+            self.rule_descriptions.push(&GString::from(&rule.description()));
+            self.rule_firing.push(if rule.firing { 1 } else { 0 });
+            self.rule_targets.push(rule.target.strand_index() as i32);
+            self.rule_limits.push(rule.current_limit as i32);
+        }
+
+        self.mrna_suppressed = PackedInt32Array::new();
+        for i in 0..MRNA_COUNT {
+            self.mrna_suppressed.push(if self.current_suppressions[i] { 1 } else { 0 });
+        }
+    }
+
+    #[func]
+    fn toggle_regulation_panel(&mut self) {
+        self.regulation_panel_open = !self.regulation_panel_open;
     }
 
     fn sync_mrna_progress(&mut self) {
@@ -835,6 +899,7 @@ impl Simulation {
                 &mrna_ys,
                 &self.mrna_progress_internal,
                 &self.mrna_processing,
+                &self.current_suppressions,
             ) {
                 crafting::feed_mrna(
                     m,
@@ -920,6 +985,11 @@ impl Simulation {
         self.mrna_xs = PackedFloat32Array::from(&crafting::MRNA_ANGLES.map(|a| a.cos() * MRNA_DIST)[..]);
         self.mrna_ys = PackedFloat32Array::from(&crafting::MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]);
         self.mrna_types = PackedInt32Array::from(&[0i32, 1, 2][..]);
+
+        // Reset rules
+        self.rules = rules::default_rules();
+        self.current_suppressions = [false; MRNA_COUNT];
+        self.regulation_panel_open = false;
 
         // Reset motors to single motor at angle 0
         self.motors = vec![Motor {

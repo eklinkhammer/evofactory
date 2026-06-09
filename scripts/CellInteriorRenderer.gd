@@ -118,12 +118,14 @@ func _draw() -> void:
 	]
 	var mrna_progress: PackedInt32Array = simulation.mrna_progress
 	var mrna_required: PackedInt32Array = simulation.mrna_required
+	var mrna_sup: PackedInt32Array = simulation.mrna_suppressed
 	for i in range(mrna_xs.size()):
 		var center := Vector2(mrna_xs[i], mrna_ys[i])
 		var col: Color = mrna_colors[mrna_types[i]]
+		var is_suppressed: bool = i < mrna_sup.size() and mrna_sup[i] == 1
 
-		# Glow when dragging amino acid and mRNA not full
-		if simulation.drag_active and simulation.dragged_particle_type == 1:
+		# Glow when dragging amino acid and mRNA not full and not suppressed
+		if simulation.drag_active and simulation.dragged_particle_type == 1 and not is_suppressed:
 			if i < mrna_progress.size() and i < mrna_required.size():
 				if mrna_progress[i] < mrna_required[i]:
 					draw_circle(center, 18.0, Color(0.5, 0.3, 0.85, 0.25))
@@ -158,8 +160,16 @@ func _draw() -> void:
 			if prog >= req:
 				draw_arc(center, 14.0, 0, TAU, 24, col, 2.5)
 
-		# mRNA label
-		draw_string(font, center + Vector2(-15, 22), mrna_names[i], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(col.r, col.g, col.b, 0.6))
+		# mRNA label (dimmed if suppressed)
+		var label_alpha: float = 0.3 if is_suppressed else 0.6
+		draw_string(font, center + Vector2(-15, 22), mrna_names[i], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(col.r, col.g, col.b, label_alpha))
+
+		# Suppression indicator: red X near the strand
+		if is_suppressed:
+			var ix := center + Vector2(18, -4)
+			var cross_size := 4.0
+			draw_line(ix + Vector2(-cross_size, -cross_size), ix + Vector2(cross_size, cross_size), Color(1.0, 0.25, 0.25, 0.9), 2.0)
+			draw_line(ix + Vector2(cross_size, -cross_size), ix + Vector2(-cross_size, cross_size), Color(1.0, 0.25, 0.25, 0.9), 2.0)
 
 		# mRNA processing progress arc
 		if i < mrna_proc.size() and mrna_proc[i] == 1:

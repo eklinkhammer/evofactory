@@ -1,6 +1,7 @@
 extends CanvasLayer
 
 var label: Label
+var reg_panel: Node2D
 
 @onready var simulation: Node = get_node("/root/Main/Simulation")
 
@@ -9,9 +10,17 @@ func _ready() -> void:
 	label.position = Vector2(16, 16)
 	label.add_theme_font_size_override("font_size", 18)
 	add_child(label)
+	var panel_script := load("res://scripts/RegulationPanel.gd")
+	reg_panel = Node2D.new()
+	reg_panel.set_script(panel_script)
+	reg_panel.simulation = simulation
+	add_child(reg_panel)
 
 func _process(_delta: float) -> void:
 	if simulation:
+		reg_panel.simulation = simulation
+		reg_panel.visible = simulation.regulation_panel_open
+		reg_panel.queue_redraw()
 		if not simulation.player_alive:
 			label.text = "GAME OVER - Press R to restart"
 			label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
