@@ -1,5 +1,8 @@
 use godot::prelude::*;
 
+mod types;
+mod crafting;
+mod interior;
 mod simulation;
 
 struct EvofactoryExtension;

@@ -1,7 +1,12 @@
 use godot::prelude::*;
 use rand::Rng;
 
-const RESOURCE_RADIUS: f32 = 8.0;
+use crate::types::{InteriorParticle, Zymase, Motor, INTERIOR_RADIUS, MAX_ATP, MOTOR_MEMBRANE_RADIUS, RESOURCE_RADIUS, MRNA_COUNT, CAPACITY_SCALE, MIN_RADIUS};
+use crate::crafting::{self, CraftOutput};
+use crate::interior;
+
+type CellResource = crate::types::Resource;
+
 const WORLD_BOUND: f32 = 500.0;
 const SPAWN_BOUND: f32 = 480.0;
 const MIN_RESPAWN_DIST: f32 = 100.0;
@@ -11,64 +16,12 @@ const START_AREA_WEIGHT: f32 = 3.0;
 
 const MOVEMENT_ATP_COST: f32 = 0.5;
 const SIZE_METABOLISM_FACTOR: f32 = 0.02;
-const FERMENTATION_YIELD: f32 = 2.0;
 const STARTING_ATP: f32 = 5.0;
-const MAX_ATP: f32 = 5.0;
 const PICK_RADIUS: f32 = 18.0;
-const MIN_RADIUS: f32 = 15.0;
 const VELOCITY_THRESHOLD: f32 = 5.0;
-const INTERIOR_RADIUS: f32 = 200.0;
 const ZYMASE_RADIUS: f32 = 15.0;
-const ZYMASE_COLLISION_DIST: f32 = 20.0;
-const MOTOR_COLLISION_DIST: f32 = 25.0;
 const MOTOR_ANGLE: f32 = 0.0;
-const MOTOR_MEMBRANE_RADIUS: f32 = INTERIOR_RADIUS;
-const MRNA_COUNT: usize = 3;
 const MRNA_DIST: f32 = 70.0;
-const MRNA_COLLISION_DIST: f32 = 20.0;
-const MRNA_REQUIRED: [i32; MRNA_COUNT] = [8, 7, 5];
-const GROWTH_PER_MEMBRANE: f32 = 5.0;
-const MAX_RADIUS: f32 = 40.0;
-const BASE_MAX_GLUCOSE: i32 = 5;
-const BASE_MAX_AMINO: i32 = 5;
-const BASE_MAX_MOTORS: usize = 3;
-const GLUCOSE_MIN_SEP: f32 = 12.0;
-const DIFFUSION_SPEED: f32 = 60.0;
-const ZYMASE_CRAFT_TIME: f32 = 2.0;
-const ZYMASE_BUFFER_SIZE: i32 = 2;
-const MRNA_CRAFT_TIME: f32 = 2.0;
-const MRNA_ANGLES: [f32; MRNA_COUNT] = [
-    150.0 * std::f32::consts::PI / 180.0,  // zymase — upper-left
-    270.0 * std::f32::consts::PI / 180.0,  // motor  — bottom
-    30.0 * std::f32::consts::PI / 180.0,   // membrane — upper-right
-];
-
-struct InteriorParticle {
-    x: f32,
-    y: f32,
-    resource_type: i32,
-}
-
-struct Resource {
-    x: f32,
-    y: f32,
-    resource_type: i32, // 0 = glucose, 1 = amino acid
-    amount: f32,
-}
-
-struct Zymase {
-    x: f32,
-    y: f32,
-    buffer: i32,
-    processing: bool,
-    timer: f32,
-}
-
-struct Motor {
-    x: f32,
-    y: f32,
-    charge: f32,
-}
 
 #[derive(GodotClass)]
 #[class(base=Node)]
@@ -111,7 +64,7 @@ pub struct Simulation {
     velocity_x: f32,
     velocity_y: f32,
 
-    resources: Vec<Resource>,
+    resources: Vec<CellResource>,
 
     #[var]
     interior_view: bool,
@@ -255,13 +208,13 @@ impl INode for Simulation {
             atp_particle_count: 0,
             glucose_particle_count: 0,
             motor_charge_display: STARTING_ATP,
-            mrna_xs: PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.cos() * MRNA_DIST)[..]),
-            mrna_ys: PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]),
+            mrna_xs: PackedFloat32Array::from(&crafting::MRNA_ANGLES.map(|a| a.cos() * MRNA_DIST)[..]),
+            mrna_ys: PackedFloat32Array::from(&crafting::MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]),
             mrna_types: PackedInt32Array::from(&[0i32, 1, 2][..]),
 
             mrna_progress_internal: [0; MRNA_COUNT],
             mrna_progress: PackedInt32Array::from(&[0i32; MRNA_COUNT][..]),
-            mrna_required: PackedInt32Array::from(&MRNA_REQUIRED[..]),
+            mrna_required: PackedInt32Array::from(&crafting::MRNA_REQUIRED[..]),
             amino_acid_particle_count: 0,
 
             mrna_processing: [false; MRNA_COUNT],
@@ -374,7 +327,7 @@ impl Simulation {
             };
             let resource_type = rng.gen_range(0..2);
             let amount = 1.0;
-            self.resources.push(Resource {
+            self.resources.push(CellResource {
                 x,
                 y,
                 resource_type,
@@ -414,6 +367,14 @@ impl Simulation {
         self.resources[index].y = y;
         self.resources[index].resource_type = rng.gen_range(0..2);
         self.resources[index].amount = 1.0;
+    }
+
+    fn mrna_xs_slice(&self) -> Vec<f32> {
+        (0..MRNA_COUNT).map(|i| self.mrna_xs[i] as f32).collect()
+    }
+
+    fn mrna_ys_slice(&self) -> Vec<f32> {
+        (0..MRNA_COUNT).map(|i| self.mrna_ys[i] as f32).collect()
     }
 
     #[func]
@@ -460,87 +421,35 @@ impl Simulation {
         }
 
         // Check absorption
-        let pickup_dist = self.player_radius + RESOURCE_RADIUS;
-        let pickup_dist_sq = pickup_dist * pickup_dist;
-        let mut respawn_indices = Vec::new();
+        let counts = interior::count_particles(&self.interior_particles);
+        let max_glucose = interior::BASE_MAX_GLUCOSE
+            + (CAPACITY_SCALE * (self.expansion_count as f32).sqrt()) as i32;
+        let max_amino = interior::BASE_MAX_AMINO
+            + (CAPACITY_SCALE * (self.expansion_count as f32).sqrt()) as i32;
 
-        // Count current interior particles for capacity limits
-        let mut cur_glucose = 0i32;
-        let mut cur_amino = 0i32;
-        for p in &self.interior_particles {
-            match p.resource_type {
-                0 => cur_glucose += 1,
-                1 => cur_amino += 1,
+        let absorption_events = interior::detect_absorptions(
+            self.player_x,
+            self.player_y,
+            self.player_radius,
+            &self.resources,
+            counts.glucose,
+            max_glucose,
+            counts.amino_acid,
+            max_amino,
+            &mut rng,
+        );
+
+        for event in &absorption_events {
+            match event.resource_type {
+                0 => self.player_glucose += event.amount,
+                1 => self.player_amino_acids += event.amount,
                 _ => {}
             }
-        }
-        let max_glucose = BASE_MAX_GLUCOSE + self.expansion_count;
-        let max_amino = BASE_MAX_AMINO + self.expansion_count;
-
-        for (i, r) in self.resources.iter().enumerate() {
-            let dx = self.player_x - r.x;
-            let dy = self.player_y - r.y;
-            let dist_sq = dx * dx + dy * dy;
-            if dist_sq < pickup_dist_sq {
-                // Compute entry point on membrane from resource direction
-                let dir_x = r.x - self.player_x;
-                let dir_y = r.y - self.player_y;
-                let dir_len = (dir_x * dir_x + dir_y * dir_y).sqrt();
-                let (entry_x, entry_y) = if dir_len > 0.001 {
-                    let nx = dir_x / dir_len;
-                    let ny = dir_y / dir_len;
-                    (nx * INTERIOR_RADIUS * 0.85, ny * INTERIOR_RADIUS * 0.85)
-                } else {
-                    let angle = rng.gen_range(0.0..std::f32::consts::TAU);
-                    (angle.cos() * INTERIOR_RADIUS * 0.85, angle.sin() * INTERIOR_RADIUS * 0.85)
-                };
-
-                match r.resource_type {
-                    0 => {
-                        if cur_glucose >= max_glucose { continue; }
-                        cur_glucose += 1;
-                        self.player_glucose += r.amount;
-                        // Push existing glucose away from entry point
-                        for p in self.interior_particles.iter_mut() {
-                            if p.resource_type != 0 { continue; }
-                            let dx = p.x - entry_x;
-                            let dy = p.y - entry_y;
-                            let d = (dx * dx + dy * dy).sqrt();
-                            if d < GLUCOSE_MIN_SEP {
-                                if d < 0.001 {
-                                    let a = rng.gen_range(0.0..std::f32::consts::TAU);
-                                    p.x = entry_x + a.cos() * GLUCOSE_MIN_SEP;
-                                    p.y = entry_y + a.sin() * GLUCOSE_MIN_SEP;
-                                } else {
-                                    let nx = dx / d;
-                                    let ny = dy / d;
-                                    p.x = entry_x + nx * GLUCOSE_MIN_SEP;
-                                    p.y = entry_y + ny * GLUCOSE_MIN_SEP;
-                                }
-                            }
-                        }
-                        self.interior_particles.push(InteriorParticle {
-                            x: entry_x,
-                            y: entry_y,
-                            resource_type: 0,
-                        });
-                    }
-                    1 => {
-                        if cur_amino >= max_amino { continue; }
-                        cur_amino += 1;
-                        self.player_amino_acids += r.amount;
-                        self.interior_particles.push(InteriorParticle {
-                            x: entry_x,
-                            y: entry_y,
-                            resource_type: 1,
-                        });
-                    }
-                    _ => {}
-                }
-                respawn_indices.push(i);
-            }
+            interior::apply_absorption(&mut self.interior_particles, event, &mut rng);
         }
 
+        // Respawn absorbed resources
+        let respawn_indices: Vec<usize> = absorption_events.iter().map(|e| e.resource_index).collect();
         for i in respawn_indices {
             self.respawn_resource(i);
         }
@@ -552,7 +461,6 @@ impl Simulation {
             if total_charge > 0.0 {
                 let cost = MOVEMENT_ATP_COST + (self.player_radius - MIN_RADIUS) * SIZE_METABOLISM_FACTOR;
                 let cost_per_frame = cost * dt;
-                // Distribute cost evenly across motors that have charge
                 let charged_motors: Vec<usize> = self.motors.iter().enumerate()
                     .filter(|(_, m)| m.charge > 0.0)
                     .map(|(i, _)| i)
@@ -564,7 +472,6 @@ impl Simulation {
                     }
                 }
             } else {
-                // No motor charge — dampen velocity (lose propulsion)
                 self.velocity_x *= 0.95_f32.powf(dt * 60.0);
                 self.velocity_y *= 0.95_f32.powf(dt * 60.0);
             }
@@ -606,192 +513,32 @@ impl Simulation {
         }
 
         // Brownian diffusion for interior particles
-        {
-            let sigma = DIFFUSION_SPEED * dt.sqrt();
-            for (i, p) in self.interior_particles.iter_mut().enumerate() {
-                if Some(i) == self.dragged_particle_index { continue; }
-                p.x += rng.gen_range(-sigma..sigma);
-                p.y += rng.gen_range(-sigma..sigma);
-                let dist = (p.x * p.x + p.y * p.y).sqrt();
-                let max_r = INTERIOR_RADIUS * 0.9;
-                if dist > max_r {
-                    let scale = max_r / dist;
-                    p.x *= scale;
-                    p.y *= scale;
-                }
-            }
-        }
+        interior::diffuse(&mut self.interior_particles, self.dragged_particle_index, dt, &mut rng);
 
         // Pairwise separation for all interior particles
-        let n = self.interior_particles.len();
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let dx = self.interior_particles[j].x - self.interior_particles[i].x;
-                let dy = self.interior_particles[j].y - self.interior_particles[i].y;
-                let d = (dx * dx + dy * dy).sqrt();
-                if d < GLUCOSE_MIN_SEP && d > 0.001 {
-                    let overlap = (GLUCOSE_MIN_SEP - d) * 0.5;
-                    let nx = dx / d;
-                    let ny = dy / d;
-                    self.interior_particles[i].x -= nx * overlap;
-                    self.interior_particles[i].y -= ny * overlap;
-                    self.interior_particles[j].x += nx * overlap;
-                    self.interior_particles[j].y += ny * overlap;
-                } else if d <= 0.001 {
-                    let a = rng.gen_range(0.0..std::f32::consts::TAU);
-                    let half = GLUCOSE_MIN_SEP * 0.5;
-                    self.interior_particles[i].x -= a.cos() * half;
-                    self.interior_particles[i].y -= a.sin() * half;
-                    self.interior_particles[j].x += a.cos() * half;
-                    self.interior_particles[j].y += a.sin() * half;
-                }
-            }
-        }
+        interior::separate(&mut self.interior_particles, &mut rng);
 
         // Re-clamp particles to membrane after separation
-        {
-            let max_r = INTERIOR_RADIUS * 0.9;
-            for p in self.interior_particles.iter_mut() {
-                let dist = (p.x * p.x + p.y * p.y).sqrt();
-                if dist > max_r {
-                    let scale = max_r / dist;
-                    p.x *= scale;
-                    p.y *= scale;
-                }
-            }
-        }
+        interior::clamp_to_membrane(&mut self.interior_particles);
 
         // Auto-consumption: particles near their target organelles are consumed
         {
-            let mut consumed: Vec<usize> = Vec::new();
-
-            for (i, p) in self.interior_particles.iter().enumerate() {
-                if Some(i) == self.dragged_particle_index { continue; }
-
-                match p.resource_type {
-                    0 => {
-                        // Glucose → nearest zymase with buffer space
-                        for e in &self.zymases {
-                            let dx = p.x - e.x;
-                            let dy = p.y - e.y;
-                            let dist = (dx * dx + dy * dy).sqrt();
-                            if dist < ZYMASE_COLLISION_DIST && e.buffer < ZYMASE_BUFFER_SIZE {
-                                consumed.push(i);
-                                break;
-                            }
-                        }
-                    }
-                    1 => {
-                        // Amino acid → incomplete, non-processing mRNA
-                        for m in 0..MRNA_COUNT {
-                            let mx = self.mrna_xs[m] as f32;
-                            let my = self.mrna_ys[m] as f32;
-                            let dx = p.x - mx;
-                            let dy = p.y - my;
-                            let dist = (dx * dx + dy * dy).sqrt();
-                            if dist < MRNA_COLLISION_DIST
-                                && self.mrna_progress_internal[m] < MRNA_REQUIRED[m]
-                                && !self.mrna_processing[m]
-                            {
-                                consumed.push(i);
-                                break;
-                            }
-                        }
-                    }
-                    2 => {
-                        // ATP → motor with charge < MAX
-                        for motor in &self.motors {
-                            let dx = p.x - motor.x;
-                            let dy = p.y - motor.y;
-                            let dist = (dx * dx + dy * dy).sqrt();
-                            if dist < MOTOR_COLLISION_DIST && motor.charge < MAX_ATP {
-                                consumed.push(i);
-                                break;
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-
-            // Apply state changes with re-validation (target may fill from earlier particle)
-            let mut actually_consumed: Vec<usize> = Vec::new();
-            for &i in &consumed {
-                let p = &self.interior_particles[i];
-                match p.resource_type {
-                    0 => {
-                        // Find nearest zymase with buffer space
-                        let mut best: Option<usize> = None;
-                        let mut best_dist = ZYMASE_COLLISION_DIST;
-                        for (ei, e) in self.zymases.iter().enumerate() {
-                            let dx = p.x - e.x;
-                            let dy = p.y - e.y;
-                            let dist = (dx * dx + dy * dy).sqrt();
-                            if dist < best_dist && e.buffer < ZYMASE_BUFFER_SIZE {
-                                best_dist = dist;
-                                best = Some(ei);
-                            }
-                        }
-                        if let Some(ei) = best {
-                            self.player_glucose -= 1.0;
-                            self.zymases[ei].buffer += 1;
-                            if !self.zymases[ei].processing {
-                                self.zymases[ei].buffer -= 1;
-                                self.zymases[ei].processing = true;
-                                self.zymases[ei].timer = ZYMASE_CRAFT_TIME;
-                            }
-                            actually_consumed.push(i);
-                        }
-                    }
-                    1 => {
-                        let mut fed = false;
-                        for m in 0..MRNA_COUNT {
-                            let mx = self.mrna_xs[m] as f32;
-                            let my = self.mrna_ys[m] as f32;
-                            let dx = p.x - mx;
-                            let dy = p.y - my;
-                            let dist = (dx * dx + dy * dy).sqrt();
-                            if dist < MRNA_COLLISION_DIST
-                                && self.mrna_progress_internal[m] < MRNA_REQUIRED[m]
-                                && !self.mrna_processing[m]
-                            {
-                                self.mrna_progress_internal[m] += 1;
-                                if self.mrna_progress_internal[m] >= MRNA_REQUIRED[m] {
-                                    self.mrna_processing[m] = true;
-                                    self.mrna_timers[m] = MRNA_CRAFT_TIME;
-                                }
-                                fed = true;
-                                break;
-                            }
-                        }
-                        if fed {
-                            actually_consumed.push(i);
-                        }
-                    }
-                    2 => {
-                        let mut best: Option<usize> = None;
-                        let mut best_dist = MOTOR_COLLISION_DIST;
-                        for (mi, motor) in self.motors.iter().enumerate() {
-                            let dx = p.x - motor.x;
-                            let dy = p.y - motor.y;
-                            let dist = (dx * dx + dy * dy).sqrt();
-                            if dist < best_dist && motor.charge < MAX_ATP {
-                                best_dist = dist;
-                                best = Some(mi);
-                            }
-                        }
-                        if let Some(mi) = best {
-                            self.motors[mi].charge = (self.motors[mi].charge + 1.0).min(MAX_ATP);
-                            actually_consumed.push(i);
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            let mrna_xs = self.mrna_xs_slice();
+            let mrna_ys = self.mrna_ys_slice();
+            let actually_consumed = crafting::auto_consume(
+                &self.interior_particles,
+                &mut self.zymases,
+                &mrna_xs,
+                &mrna_ys,
+                &mut self.mrna_progress_internal,
+                &mut self.mrna_processing,
+                &mut self.mrna_timers,
+                &mut self.motors,
+                self.dragged_particle_index,
+                &mut self.player_glucose,
+            );
 
             // Remove consumed particles in reverse order (swap_remove safe)
-            actually_consumed.sort_unstable();
-            actually_consumed.dedup();
             for &i in actually_consumed.iter().rev() {
                 self.interior_particles.swap_remove(i);
                 // Fix up dragged_particle_index if it shifted
@@ -806,87 +553,65 @@ impl Simulation {
             }
         }
 
-        // Zymase timed crafting (all zymases)
-        for ei in 0..self.zymases.len() {
-            if self.zymases[ei].processing {
-                self.zymases[ei].timer -= dt;
-                if self.zymases[ei].timer <= 0.0 {
-                    let ex = self.zymases[ei].x;
-                    let ey = self.zymases[ei].y;
-                    for _ in 0..FERMENTATION_YIELD as i32 {
-                        self.interior_particles.push(InteriorParticle {
-                            x: ex + rng.gen_range(-10.0..10.0),
-                            y: ey + rng.gen_range(-10.0..10.0),
-                            resource_type: 2,
-                        });
-                    }
-                    self.zymases[ei].processing = false;
-                    self.zymases[ei].timer = 0.0;
-                    if self.zymases[ei].buffer > 0 {
-                        self.zymases[ei].buffer -= 1;
-                        self.zymases[ei].processing = true;
-                        self.zymases[ei].timer = ZYMASE_CRAFT_TIME;
-                    }
-                }
+        // Zymase timed crafting
+        let zymase_outputs = crafting::tick_zymases(&mut self.zymases, dt, &mut rng);
+        for output in zymase_outputs {
+            if let CraftOutput::SpawnParticle { x, y, resource_type } = output {
+                self.interior_particles.push(InteriorParticle { x, y, resource_type });
             }
         }
 
-        // mRNA timed crafting (timer runs after all amino acids collected)
-        for m in 0..MRNA_COUNT {
-            if self.mrna_processing[m] {
-                self.mrna_timers[m] -= dt;
-                if self.mrna_timers[m] <= 0.0 {
-                    self.mrna_processing[m] = false;
-                    self.mrna_timers[m] = 0.0;
-                    self.mrna_progress_internal[m] = 0;
-                    if m == 0 {
-                        // Spawn new zymase near the zymase mRNA
-                        let spawn_x = self.mrna_xs[0] as f32;
-                        let spawn_y = self.mrna_ys[0] as f32;
+        // mRNA timed crafting
+        {
+            let mrna_xs = self.mrna_xs_slice();
+            let mrna_ys = self.mrna_ys_slice();
+            let mrna_outputs = crafting::tick_mrna(
+                &mut self.mrna_processing,
+                &mut self.mrna_timers,
+                &mut self.mrna_progress_internal,
+                &mrna_xs,
+                &mrna_ys,
+                self.motors.len(),
+                self.expansion_count,
+                dt,
+            );
+            for output in mrna_outputs {
+                match output {
+                    CraftOutput::SpawnZymase { x, y } => {
                         self.zymases.push(Zymase {
-                            x: spawn_x,
-                            y: spawn_y,
+                            x,
+                            y,
                             buffer: 0,
                             processing: false,
                             timer: 0.0,
                         });
-                    } else if m == 1 {
-                        let max_motors = BASE_MAX_MOTORS + (self.expansion_count / 5) as usize;
-                        if self.motors.len() < max_motors {
-                            let spawn_angle = MRNA_ANGLES[1];
-                            self.motors.push(Motor {
-                                x: spawn_angle.cos() * MOTOR_MEMBRANE_RADIUS,
-                                y: spawn_angle.sin() * MOTOR_MEMBRANE_RADIUS,
-                                charge: 0.0,
-                            });
-                        }
-                    } else if m == 2 {
-                        self.player_radius = (self.player_radius + GROWTH_PER_MEMBRANE).min(MAX_RADIUS);
-                        self.expansion_count += 1;
                     }
+                    CraftOutput::SpawnMotor { angle } => {
+                        self.motors.push(Motor {
+                            x: angle.cos() * MOTOR_MEMBRANE_RADIUS,
+                            y: angle.sin() * MOTOR_MEMBRANE_RADIUS,
+                            charge: 0.0,
+                        });
+                    }
+                    CraftOutput::GrowCell => {
+                        self.expansion_count += 1;
+                        self.player_radius =
+                            MIN_RADIUS + crafting::GROWTH_SCALE * (self.expansion_count as f32).sqrt();
+                    }
+                    _ => {}
                 }
             }
         }
 
         // Count particles for HUD
-        let mut atp_count = 0;
-        let mut glucose_count = 0;
-        let mut amino_count = 0;
-        for p in &self.interior_particles {
-            match p.resource_type {
-                0 => glucose_count += 1,
-                1 => amino_count += 1,
-                2 => atp_count += 1,
-                _ => {}
-            }
-        }
-        self.atp_particle_count = atp_count;
-        self.glucose_particle_count = glucose_count;
-        self.amino_acid_particle_count = amino_count;
+        let counts = interior::count_particles(&self.interior_particles);
+        self.atp_particle_count = counts.atp;
+        self.glucose_particle_count = counts.glucose;
+        self.amino_acid_particle_count = counts.amino_acid;
 
         // Death check: fully depleted when no motor charge AND no ATP/glucose particles
         let total_charge: f32 = self.motors.iter().map(|m| m.charge).sum();
-        if total_charge <= 0.0 && atp_count == 0 && glucose_count == 0 {
+        if total_charge <= 0.0 && counts.atp == 0 && counts.glucose == 0 {
             self.player_alive = false;
         }
 
@@ -922,7 +647,6 @@ impl Simulation {
     fn try_pick_particle(&mut self, x: f32, y: f32) -> bool {
         let mut best_dist = PICK_RADIUS;
 
-        // Track which kind of thing is closest
         enum PickTarget {
             Particle(usize),
             Motor(usize),
@@ -931,7 +655,6 @@ impl Simulation {
         }
         let mut best: Option<PickTarget> = None;
 
-        // Check particles
         for (i, p) in self.interior_particles.iter().enumerate() {
             let dx = p.x - x;
             let dy = p.y - y;
@@ -942,7 +665,6 @@ impl Simulation {
             }
         }
 
-        // Check motors
         for (i, m) in self.motors.iter().enumerate() {
             let dx = m.x - x;
             let dy = m.y - y;
@@ -953,7 +675,6 @@ impl Simulation {
             }
         }
 
-        // Check zymases
         for (i, e) in self.zymases.iter().enumerate() {
             let dx = e.x - x;
             let dy = e.y - y;
@@ -964,7 +685,6 @@ impl Simulation {
             }
         }
 
-        // Check mRNA strands
         for i in 0..MRNA_COUNT {
             let dx = self.mrna_xs[i as usize] - x;
             let dy = self.mrna_ys[i as usize] - y;
@@ -975,7 +695,6 @@ impl Simulation {
             }
         }
 
-        // Clear all drag states
         self.dragged_particle_index = None;
         self.dragged_motor_index = None;
         self.dragged_zymase_index = None;
@@ -1029,12 +748,10 @@ impl Simulation {
         }
 
         if self.dragged_motor_index.is_some() {
-            // Motor drag: constrain to membrane edge
             let angle = y.atan2(x);
             self.dragged_particle_x = angle.cos() * MOTOR_MEMBRANE_RADIUS;
             self.dragged_particle_y = angle.sin() * MOTOR_MEMBRANE_RADIUS;
         } else {
-            // Clamp to membrane interior (particles, zymase, mRNA)
             let dist = (x * x + y * y).sqrt();
             let max_r = INTERIOR_RADIUS * 0.9;
             if dist > max_r {
@@ -1101,68 +818,36 @@ impl Simulation {
 
         let p_type = self.interior_particles[idx].resource_type;
 
-        // Check drop targets
+        // Check drop targets using shared helpers
         if p_type == 0 {
-            // Glucose on zymase? → find nearest zymase within range with buffer space
-            let mut best_zymase: Option<usize> = None;
-            let mut best_zymase_dist = ZYMASE_COLLISION_DIST;
-            for (i, e) in self.zymases.iter().enumerate() {
-                let dx = x - e.x;
-                let dy = y - e.y;
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist < best_zymase_dist && e.buffer < ZYMASE_BUFFER_SIZE {
-                    best_zymase_dist = dist;
-                    best_zymase = Some(i);
-                }
-            }
-            if let Some(ei) = best_zymase {
+            if let Some(ei) = crafting::find_zymase_target(x, y, &self.zymases) {
                 self.player_glucose -= 1.0;
                 self.interior_particles.swap_remove(idx);
-                self.zymases[ei].buffer += 1;
-                if !self.zymases[ei].processing {
-                    self.zymases[ei].buffer -= 1;
-                    self.zymases[ei].processing = true;
-                    self.zymases[ei].timer = ZYMASE_CRAFT_TIME;
-                }
+                crafting::feed_zymase(&mut self.zymases[ei]);
             }
         } else if p_type == 1 {
-            // Amino acid on mRNA?
-            for m in 0..MRNA_COUNT {
-                let mrna_x = self.mrna_xs[m as usize];
-                let mrna_y = self.mrna_ys[m as usize];
-                let dx = x - mrna_x;
-                let dy = y - mrna_y;
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist < MRNA_COLLISION_DIST
-                    && self.mrna_progress_internal[m] < MRNA_REQUIRED[m]
-                    && !self.mrna_processing[m]
-                {
-                    self.mrna_progress_internal[m] += 1;
-                    self.interior_particles.swap_remove(idx);
-                    // All amino acids collected → start craft timer
-                    if self.mrna_progress_internal[m] >= MRNA_REQUIRED[m] {
-                        self.mrna_processing[m] = true;
-                        self.mrna_timers[m] = MRNA_CRAFT_TIME;
-                    }
-                    break;
-                }
+            let mrna_xs = self.mrna_xs_slice();
+            let mrna_ys = self.mrna_ys_slice();
+            if let Some(m) = crafting::find_mrna_target(
+                x,
+                y,
+                &mrna_xs,
+                &mrna_ys,
+                &self.mrna_progress_internal,
+                &self.mrna_processing,
+            ) {
+                crafting::feed_mrna(
+                    m,
+                    &mut self.mrna_progress_internal,
+                    &mut self.mrna_processing,
+                    &mut self.mrna_timers,
+                );
+                self.interior_particles.swap_remove(idx);
             }
         } else if p_type == 2 {
-            // ATP on motor? Find nearest motor within range
-            let mut best_motor: Option<usize> = None;
-            let mut best_motor_dist = MOTOR_COLLISION_DIST;
-            for (i, motor) in self.motors.iter().enumerate() {
-                let dx = x - motor.x;
-                let dy = y - motor.y;
-                let dist = (dx * dx + dy * dy).sqrt();
-                if dist < best_motor_dist && motor.charge < MAX_ATP {
-                    best_motor_dist = dist;
-                    best_motor = Some(i);
-                }
-            }
-            if let Some(mi) = best_motor {
+            if let Some(mi) = crafting::find_motor_target(x, y, &self.motors) {
                 self.interior_particles.swap_remove(idx);
-                self.motors[mi].charge = (self.motors[mi].charge + 1.0).min(MAX_ATP);
+                crafting::feed_motor(&mut self.motors[mi]);
             }
         }
 
@@ -1232,8 +917,8 @@ impl Simulation {
         self.dragged_particle_y = 0.0;
         self.drag_active = false;
         self.dragged_particle_type = -1;
-        self.mrna_xs = PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.cos() * MRNA_DIST)[..]);
-        self.mrna_ys = PackedFloat32Array::from(&MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]);
+        self.mrna_xs = PackedFloat32Array::from(&crafting::MRNA_ANGLES.map(|a| a.cos() * MRNA_DIST)[..]);
+        self.mrna_ys = PackedFloat32Array::from(&crafting::MRNA_ANGLES.map(|a| a.sin() * MRNA_DIST)[..]);
         self.mrna_types = PackedInt32Array::from(&[0i32, 1, 2][..]);
 
         // Reset motors to single motor at angle 0
