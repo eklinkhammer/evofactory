@@ -17,7 +17,7 @@ func _process(_delta: float) -> void:
 			label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
 		else:
 			if simulation.interior_view:
-				label.text = "Motor: %d/%d | ATP: %d | Glucose: %d | Amino: %d\nDrag glucose→zymase, ATP→motor, amino→mRNA" % [
+				label.text = "Motor: %d/%d | ATP: %d | Glucose: %d | Amino: %d\nParticles diffuse to organelles. Drag to place organelles." % [
 					int(simulation.motor_charge_display),
 					int(simulation.player_max_atp),
 					simulation.atp_particle_count,

@@ -33,6 +33,7 @@ const BASE_MAX_GLUCOSE: i32 = 5;
 const BASE_MAX_AMINO: i32 = 5;
 const BASE_MAX_MOTORS: usize = 3;
 const GLUCOSE_MIN_SEP: f32 = 12.0;
+const DIFFUSION_SPEED: f32 = 60.0;
 const ZYMASE_CRAFT_TIME: f32 = 2.0;
 const ZYMASE_BUFFER_SIZE: i32 = 2;
 const MRNA_CRAFT_TIME: f32 = 2.0;
@@ -604,12 +605,27 @@ impl Simulation {
             }
         }
 
-        // Pairwise glucose separation
+        // Brownian diffusion for interior particles
+        {
+            let sigma = DIFFUSION_SPEED * dt.sqrt();
+            for (i, p) in self.interior_particles.iter_mut().enumerate() {
+                if Some(i) == self.dragged_particle_index { continue; }
+                p.x += rng.gen_range(-sigma..sigma);
+                p.y += rng.gen_range(-sigma..sigma);
+                let dist = (p.x * p.x + p.y * p.y).sqrt();
+                let max_r = INTERIOR_RADIUS * 0.9;
+                if dist > max_r {
+                    let scale = max_r / dist;
+                    p.x *= scale;
+                    p.y *= scale;
+                }
+            }
+        }
+
+        // Pairwise separation for all interior particles
         let n = self.interior_particles.len();
         for i in 0..n {
-            if self.interior_particles[i].resource_type != 0 { continue; }
             for j in (i + 1)..n {
-                if self.interior_particles[j].resource_type != 0 { continue; }
                 let dx = self.interior_particles[j].x - self.interior_particles[i].x;
                 let dy = self.interior_particles[j].y - self.interior_particles[i].y;
                 let d = (dx * dx + dy * dy).sqrt();
@@ -628,6 +644,164 @@ impl Simulation {
                     self.interior_particles[i].y -= a.sin() * half;
                     self.interior_particles[j].x += a.cos() * half;
                     self.interior_particles[j].y += a.sin() * half;
+                }
+            }
+        }
+
+        // Re-clamp particles to membrane after separation
+        {
+            let max_r = INTERIOR_RADIUS * 0.9;
+            for p in self.interior_particles.iter_mut() {
+                let dist = (p.x * p.x + p.y * p.y).sqrt();
+                if dist > max_r {
+                    let scale = max_r / dist;
+                    p.x *= scale;
+                    p.y *= scale;
+                }
+            }
+        }
+
+        // Auto-consumption: particles near their target organelles are consumed
+        {
+            let mut consumed: Vec<usize> = Vec::new();
+
+            for (i, p) in self.interior_particles.iter().enumerate() {
+                if Some(i) == self.dragged_particle_index { continue; }
+
+                match p.resource_type {
+                    0 => {
+                        // Glucose → nearest zymase with buffer space
+                        for e in &self.zymases {
+                            let dx = p.x - e.x;
+                            let dy = p.y - e.y;
+                            let dist = (dx * dx + dy * dy).sqrt();
+                            if dist < ZYMASE_COLLISION_DIST && e.buffer < ZYMASE_BUFFER_SIZE {
+                                consumed.push(i);
+                                break;
+                            }
+                        }
+                    }
+                    1 => {
+                        // Amino acid → incomplete, non-processing mRNA
+                        for m in 0..MRNA_COUNT {
+                            let mx = self.mrna_xs[m] as f32;
+                            let my = self.mrna_ys[m] as f32;
+                            let dx = p.x - mx;
+                            let dy = p.y - my;
+                            let dist = (dx * dx + dy * dy).sqrt();
+                            if dist < MRNA_COLLISION_DIST
+                                && self.mrna_progress_internal[m] < MRNA_REQUIRED[m]
+                                && !self.mrna_processing[m]
+                            {
+                                consumed.push(i);
+                                break;
+                            }
+                        }
+                    }
+                    2 => {
+                        // ATP → motor with charge < MAX
+                        for motor in &self.motors {
+                            let dx = p.x - motor.x;
+                            let dy = p.y - motor.y;
+                            let dist = (dx * dx + dy * dy).sqrt();
+                            if dist < MOTOR_COLLISION_DIST && motor.charge < MAX_ATP {
+                                consumed.push(i);
+                                break;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Apply state changes with re-validation (target may fill from earlier particle)
+            let mut actually_consumed: Vec<usize> = Vec::new();
+            for &i in &consumed {
+                let p = &self.interior_particles[i];
+                match p.resource_type {
+                    0 => {
+                        // Find nearest zymase with buffer space
+                        let mut best: Option<usize> = None;
+                        let mut best_dist = ZYMASE_COLLISION_DIST;
+                        for (ei, e) in self.zymases.iter().enumerate() {
+                            let dx = p.x - e.x;
+                            let dy = p.y - e.y;
+                            let dist = (dx * dx + dy * dy).sqrt();
+                            if dist < best_dist && e.buffer < ZYMASE_BUFFER_SIZE {
+                                best_dist = dist;
+                                best = Some(ei);
+                            }
+                        }
+                        if let Some(ei) = best {
+                            self.player_glucose -= 1.0;
+                            self.zymases[ei].buffer += 1;
+                            if !self.zymases[ei].processing {
+                                self.zymases[ei].buffer -= 1;
+                                self.zymases[ei].processing = true;
+                                self.zymases[ei].timer = ZYMASE_CRAFT_TIME;
+                            }
+                            actually_consumed.push(i);
+                        }
+                    }
+                    1 => {
+                        let mut fed = false;
+                        for m in 0..MRNA_COUNT {
+                            let mx = self.mrna_xs[m] as f32;
+                            let my = self.mrna_ys[m] as f32;
+                            let dx = p.x - mx;
+                            let dy = p.y - my;
+                            let dist = (dx * dx + dy * dy).sqrt();
+                            if dist < MRNA_COLLISION_DIST
+                                && self.mrna_progress_internal[m] < MRNA_REQUIRED[m]
+                                && !self.mrna_processing[m]
+                            {
+                                self.mrna_progress_internal[m] += 1;
+                                if self.mrna_progress_internal[m] >= MRNA_REQUIRED[m] {
+                                    self.mrna_processing[m] = true;
+                                    self.mrna_timers[m] = MRNA_CRAFT_TIME;
+                                }
+                                fed = true;
+                                break;
+                            }
+                        }
+                        if fed {
+                            actually_consumed.push(i);
+                        }
+                    }
+                    2 => {
+                        let mut best: Option<usize> = None;
+                        let mut best_dist = MOTOR_COLLISION_DIST;
+                        for (mi, motor) in self.motors.iter().enumerate() {
+                            let dx = p.x - motor.x;
+                            let dy = p.y - motor.y;
+                            let dist = (dx * dx + dy * dy).sqrt();
+                            if dist < best_dist && motor.charge < MAX_ATP {
+                                best_dist = dist;
+                                best = Some(mi);
+                            }
+                        }
+                        if let Some(mi) = best {
+                            self.motors[mi].charge = (self.motors[mi].charge + 1.0).min(MAX_ATP);
+                            actually_consumed.push(i);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            // Remove consumed particles in reverse order (swap_remove safe)
+            actually_consumed.sort_unstable();
+            actually_consumed.dedup();
+            for &i in actually_consumed.iter().rev() {
+                self.interior_particles.swap_remove(i);
+                // Fix up dragged_particle_index if it shifted
+                if let Some(ref mut di) = self.dragged_particle_index {
+                    if *di == i {
+                        self.dragged_particle_index = None;
+                    } else if *di == self.interior_particles.len() {
+                        // This particle was swapped into position i
+                        *di = i;
+                    }
                 }
             }
         }
