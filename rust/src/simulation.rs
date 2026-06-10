@@ -5,6 +5,7 @@ use crate::types::{InteriorParticle, Zymase, Motor, INTERIOR_RADIUS, MAX_ATP, MO
 use crate::crafting::{self, CraftOutput};
 use crate::interior;
 use crate::rules::{self, Rule};
+use crate::tech::{self, Tech};
 
 type CellResource = crate::types::Resource;
 
@@ -160,6 +161,21 @@ pub struct Simulation {
     #[var]
     mrna_suppressed: PackedInt32Array,
 
+    techs: Vec<Tech>,
+
+    #[var]
+    tech_panel_open: bool,
+    #[var]
+    tech_count: i32,
+    #[var]
+    tech_names: PackedStringArray,
+    #[var]
+    tech_descriptions: PackedStringArray,
+    #[var]
+    tech_progress: PackedFloat32Array,
+    #[var]
+    tech_completed: PackedInt32Array,
+
     dragged_particle_index: Option<usize>,
     #[var]
     dragged_particle_x: f32,
@@ -247,6 +263,13 @@ impl INode for Simulation {
             current_suppressions: [false; MRNA_COUNT],
 
             regulation_panel_open: false,
+            techs: tech::default_techs(),
+            tech_panel_open: false,
+            tech_count: 0,
+            tech_names: PackedStringArray::new(),
+            tech_descriptions: PackedStringArray::new(),
+            tech_progress: PackedFloat32Array::new(),
+            tech_completed: PackedInt32Array::new(),
             rule_count: 0,
             rule_descriptions: PackedStringArray::new(),
             rule_firing: PackedInt32Array::new(),
@@ -664,6 +687,14 @@ impl Simulation {
         self.sync_mrna_progress();
         self.sync_crafting_state();
         self.sync_rule_arrays();
+
+        tech::tick_techs(
+            &mut self.techs,
+            &self.rules,
+            self.motors.len(),
+            self.zymases.len(),
+        );
+        self.sync_tech_arrays();
     }
 
     fn sync_crafting_state(&mut self) {
@@ -693,6 +724,26 @@ impl Simulation {
         for i in 0..MRNA_COUNT {
             self.mrna_suppressed.push(if self.current_suppressions[i] { 1 } else { 0 });
         }
+    }
+
+    fn sync_tech_arrays(&mut self) {
+        self.tech_count = self.techs.len() as i32;
+        self.tech_names = PackedStringArray::new();
+        self.tech_descriptions = PackedStringArray::new();
+        self.tech_progress = PackedFloat32Array::new();
+        self.tech_completed = PackedInt32Array::new();
+
+        for t in &self.techs {
+            self.tech_names.push(&GString::from(&t.name));
+            self.tech_descriptions.push(&GString::from(&t.description));
+            self.tech_progress.push(t.progress);
+            self.tech_completed.push(if t.completed { 1 } else { 0 });
+        }
+    }
+
+    #[func]
+    fn toggle_tech_panel(&mut self) {
+        self.tech_panel_open = !self.tech_panel_open;
     }
 
     #[func]
@@ -990,6 +1041,10 @@ impl Simulation {
         self.rules = rules::default_rules();
         self.current_suppressions = [false; MRNA_COUNT];
         self.regulation_panel_open = false;
+
+        // Reset techs
+        self.techs = tech::default_techs();
+        self.tech_panel_open = false;
 
         // Reset motors to single motor at angle 0
         self.motors = vec![Motor {

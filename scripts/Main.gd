@@ -15,6 +15,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_G:
 			simulation.toggle_regulation_panel()
+		if event.keycode == KEY_T:
+			simulation.toggle_tech_panel()
 		if event.keycode == KEY_TAB:
 			# Cancel active drag when leaving interior
 			if simulation.interior_view and dragging:
