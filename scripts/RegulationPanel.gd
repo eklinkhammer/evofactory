@@ -11,32 +11,36 @@ const MRNA_COLORS: Array[Color] = [
 	Color(0.3, 0.85, 0.9),  # membrane
 ]
 
-const PANEL_W := 440.0
-const ROW_H := 32.0
-const HEADER_H := 34.0
-const FOOTER_H := 30.0
-const PAD := 10.0
+const PANEL_W := 700.0
+const ROW_H := 48.0
+const HEADER_H := 54.0
+const FOOTER_H := 48.0
+const PAD := 16.0
+const FONT_SIZE := 18
+const TITLE_SIZE := 28
+const SMALL_SIZE := 14
 
 # Column X offsets (relative to panel_x)
-const COL_METRIC := 10.0
-const COL_METRIC_W := 65.0
-const COL_SUBJECT := 80.0
-const COL_SUBJECT_W := 68.0
-const COL_RELATION := 152.0
-const COL_RELATION_W := 26.0
-const COL_THRESH := 182.0
-const COL_THRESH_W := 68.0
-const COL_ARROW := 254.0
-const COL_TARGET := 274.0
-const COL_TARGET_W := 68.0
-const COL_VALUE := 346.0
-const COL_ENABLED := 388.0
-const COL_ENABLED_W := 20.0
-const COL_DELETE := 412.0
-const COL_DELETE_W := 20.0
+const COL_METRIC := 14.0
+const COL_METRIC_W := 90.0
+const COL_SUBJECT := 112.0
+const COL_SUBJECT_W := 100.0
+const COL_RELATION := 220.0
+const COL_RELATION_W := 40.0
+const COL_THRESH := 268.0
+const COL_THRESH_W := 100.0
+const COL_ARROW := 376.0
+const COL_TARGET := 408.0
+const COL_TARGET_W := 100.0
+const COL_VALUE := 516.0
+const COL_VALUE_W := 80.0
+const COL_ENABLED := 604.0
+const COL_ENABLED_W := 36.0
+const COL_DELETE := 648.0
+const COL_DELETE_W := 36.0
 
 var _panel_x: float = 0.0
-var _panel_y: float = 60.0
+var _panel_y: float = 0.0
 var _panel_h: float = 0.0
 
 # Inline text editing state
@@ -48,21 +52,19 @@ func _draw() -> void:
 		return
 
 	var font := ThemeDB.fallback_font
-	var font_size := 12
-	var title_size := 16
 
 	var viewport_size := get_viewport_rect().size
 	var rule_count: int = simulation.rule_count
-	_panel_h = HEADER_H + float(rule_count) * ROW_H + FOOTER_H + 10.0
-	_panel_x = viewport_size.x - PANEL_W - 20.0
-	_panel_y = 60.0
+	_panel_h = HEADER_H + float(rule_count) * ROW_H + FOOTER_H + 16.0
+	_panel_x = (viewport_size.x - PANEL_W) / 2.0
+	_panel_y = (viewport_size.y - _panel_h) / 2.0
 
 	# Background
-	draw_rect(Rect2(_panel_x, _panel_y, PANEL_W, _panel_h), Color(0.0, 0.0, 0.0, 0.85))
-	draw_rect(Rect2(_panel_x, _panel_y, PANEL_W, _panel_h), Color(0.4, 0.4, 0.4, 0.6), false, 1.0)
+	draw_rect(Rect2(_panel_x, _panel_y, PANEL_W, _panel_h), Color(0.0, 0.0, 0.0, 0.9))
+	draw_rect(Rect2(_panel_x, _panel_y, PANEL_W, _panel_h), Color(0.4, 0.4, 0.4, 0.6), false, 2.0)
 
 	# Title
-	draw_string(font, Vector2(_panel_x + PAD, _panel_y + 22), "Gene Regulation", HORIZONTAL_ALIGNMENT_LEFT, -1, title_size, Color.WHITE)
+	draw_string(font, Vector2(_panel_x + PAD, _panel_y + 38), "Gene Regulation", HORIZONTAL_ALIGNMENT_LEFT, -1, TITLE_SIZE, Color.WHITE)
 
 	var metrics: PackedInt32Array = simulation.rule_metrics
 	var subjects: PackedInt32Array = simulation.rule_subjects
@@ -76,7 +78,7 @@ func _draw() -> void:
 
 	for ri in range(rule_count):
 		var y_base := _panel_y + HEADER_H + float(ri) * ROW_H
-		var y_text := y_base + 20.0
+		var y_text := y_base + 32.0
 
 		var metric_idx: int = metrics[ri] if ri < metrics.size() else 0
 		var subject_idx: int = subjects[ri] if ri < subjects.size() else 0
@@ -88,7 +90,7 @@ func _draw() -> void:
 		var is_firing: bool = ri < firing.size() and firing[ri] == 1
 		var is_locked: bool = ri < locked.size() and locked[ri] == 1
 
-		var dim := Color(0.35, 0.35, 0.35) if is_locked else (Color(0.4, 0.4, 0.4) if not is_enabled else Color(0.8, 0.8, 0.8))
+		var dim := Color(0.35, 0.35, 0.35) if is_locked else (Color(0.4, 0.4, 0.4) if not is_enabled else Color(0.85, 0.85, 0.85))
 		var fire_col := Color(1.0, 0.3, 0.3) if is_firing else dim
 
 		# Metric
@@ -103,24 +105,23 @@ func _draw() -> void:
 
 		# Threshold (text entry or display)
 		if _editing_rule == ri:
-			# Editing mode: show text with cursor
-			var rect := Rect2(_panel_x + COL_THRESH, y_base + 2, COL_THRESH_W, ROW_H - 4)
+			var rect := Rect2(_panel_x + COL_THRESH, y_base + 4, COL_THRESH_W, ROW_H - 8)
 			draw_rect(rect, Color(0.15, 0.15, 0.25, 0.9))
-			draw_rect(rect, Color(0.4, 0.6, 1.0, 0.8), false, 1.0)
+			draw_rect(rect, Color(0.4, 0.6, 1.0, 0.8), false, 2.0)
 			var display_text := _edit_text + "|"
-			draw_string(font, Vector2(_panel_x + COL_THRESH + 3, y_text), display_text, HORIZONTAL_ALIGNMENT_LEFT, int(COL_THRESH_W - 4), font_size, Color(1.0, 1.0, 1.0))
+			draw_string(font, Vector2(_panel_x + COL_THRESH + 6, y_text), display_text, HORIZONTAL_ALIGNMENT_LEFT, int(COL_THRESH_W - 8), FONT_SIZE, Color(1.0, 1.0, 1.0))
 		else:
 			var thresh_str: String
-			if metric_idx == 0:  # Count
+			if metric_idx == 0:
 				thresh_str = "%d" % int(threshold)
-			elif metric_idx == 1:  # Density
+			elif metric_idx == 1:
 				thresh_str = "%.4f" % threshold
-			else:  # SurfaceDensity
+			else:
 				thresh_str = "%.3f" % threshold
 			_draw_button(font, _panel_x + COL_THRESH, y_base, COL_THRESH_W, thresh_str, dim)
 
 		# Arrow
-		draw_string(font, Vector2(_panel_x + COL_ARROW, y_text), "->", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, fire_col)
+		draw_string(font, Vector2(_panel_x + COL_ARROW, y_text), "->", HORIZONTAL_ALIGNMENT_LEFT, -1, FONT_SIZE, fire_col)
 
 		# Target
 		var tgt_col: Color = MRNA_COLORS[target_idx] if (is_enabled and not is_locked) else dim
@@ -134,7 +135,7 @@ func _draw() -> void:
 			val_str = "%.4f" % value
 		else:
 			val_str = "%.3f" % value
-		draw_string(font, Vector2(_panel_x + COL_VALUE, y_text), val_str, HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(0.6, 0.6, 0.6, 0.9))
+		draw_string(font, Vector2(_panel_x + COL_VALUE, y_text), val_str, HORIZONTAL_ALIGNMENT_LEFT, -1, SMALL_SIZE, Color(0.6, 0.6, 0.6, 0.9))
 
 		if not is_locked:
 			# Enabled toggle
@@ -145,20 +146,18 @@ func _draw() -> void:
 			# Delete button
 			_draw_button(font, _panel_x + COL_DELETE, y_base, COL_DELETE_W, "x", Color(0.7, 0.3, 0.3))
 		else:
-			# Locked indicator
-			draw_string(font, Vector2(_panel_x + COL_ENABLED, y_text), "locked", HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(0.5, 0.4, 0.2))
+			draw_string(font, Vector2(_panel_x + COL_ENABLED, y_text), "locked", HORIZONTAL_ALIGNMENT_LEFT, -1, SMALL_SIZE, Color(0.5, 0.4, 0.2))
 
 	# Add rule button
-	var add_y := _panel_y + HEADER_H + float(rule_count) * ROW_H + 4.0
+	var add_y := _panel_y + HEADER_H + float(rule_count) * ROW_H + 8.0
 	if rule_count < 5:
-		_draw_button(font, _panel_x + PAD, add_y, 80.0, "+ Add Rule", Color(0.5, 0.8, 0.5))
+		_draw_button(font, _panel_x + PAD, add_y, 130.0, "+ Add Rule", Color(0.5, 0.8, 0.5))
 
 func _draw_button(font: Font, x: float, y: float, w: float, text: String, color: Color) -> void:
-	var font_size := 12
-	var rect := Rect2(x, y + 2, w, ROW_H - 4)
+	var rect := Rect2(x, y + 4, w, ROW_H - 8)
 	draw_rect(rect, Color(0.2, 0.2, 0.2, 0.6))
 	draw_rect(rect, Color(0.5, 0.5, 0.5, 0.4), false, 1.0)
-	draw_string(font, Vector2(x + 3, y + 20), text, HORIZONTAL_ALIGNMENT_LEFT, int(w - 4), font_size, color)
+	draw_string(font, Vector2(x + 6, y + 32), text, HORIZONTAL_ALIGNMENT_LEFT, int(w - 8), FONT_SIZE, color)
 
 func _commit_edit() -> void:
 	if _editing_rule >= 0 and simulation:
@@ -172,7 +171,6 @@ func _cancel_edit() -> void:
 	_edit_text = ""
 
 func _start_edit(rule_idx: int) -> void:
-	# Pre-fill with current threshold value
 	var thresholds: PackedFloat32Array = simulation.rule_thresholds
 	var metrics: PackedInt32Array = simulation.rule_metrics
 	if rule_idx < thresholds.size():
@@ -229,7 +227,6 @@ func _input(event: InputEvent) -> void:
 	# If editing and click is outside threshold field, commit
 	if _editing_rule >= 0:
 		_commit_edit()
-		# Fall through to handle the click normally
 
 	# Check if click is within panel
 	if mx < _panel_x or mx > _panel_x + PANEL_W:
@@ -283,8 +280,8 @@ func _input(event: InputEvent) -> void:
 			return
 
 	# Check add button
-	var add_y := _panel_y + HEADER_H + float(rule_count) * ROW_H + 4.0
-	if my >= add_y and my <= add_y + ROW_H and mx >= _panel_x + PAD and mx <= _panel_x + PAD + 80.0:
+	var add_y := _panel_y + HEADER_H + float(rule_count) * ROW_H + 8.0
+	if my >= add_y and my <= add_y + ROW_H and mx >= _panel_x + PAD and mx <= _panel_x + PAD + 130.0:
 		if rule_count < 5:
 			simulation.add_rule()
 			get_viewport().set_input_as_handled()

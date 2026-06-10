@@ -9,7 +9,7 @@ var tech_panel: Node2D
 func _ready() -> void:
 	label = Label.new()
 	label.position = Vector2(16, 16)
-	label.add_theme_font_size_override("font_size", 18)
+	label.add_theme_font_size_override("font_size", 28)
 	add_child(label)
 	var panel_script := load("res://scripts/RegulationPanel.gd")
 	reg_panel = Node2D.new()
