@@ -151,13 +151,23 @@ pub struct Simulation {
     #[var]
     rule_count: i32,
     #[var]
-    rule_descriptions: PackedStringArray,
+    rule_metrics: PackedInt32Array,
     #[var]
-    rule_firing: PackedInt32Array,
+    rule_subjects: PackedInt32Array,
+    #[var]
+    rule_relations: PackedInt32Array,
+    #[var]
+    rule_thresholds: PackedFloat32Array,
     #[var]
     rule_targets: PackedInt32Array,
     #[var]
-    rule_limits: PackedInt32Array,
+    rule_values: PackedFloat32Array,
+    #[var]
+    rule_enabled: PackedInt32Array,
+    #[var]
+    rule_firing: PackedInt32Array,
+    #[var]
+    rule_locked: PackedInt32Array,
     #[var]
     mrna_suppressed: PackedInt32Array,
 
@@ -271,10 +281,15 @@ impl INode for Simulation {
             tech_progress: PackedFloat32Array::new(),
             tech_completed: PackedInt32Array::new(),
             rule_count: 0,
-            rule_descriptions: PackedStringArray::new(),
-            rule_firing: PackedInt32Array::new(),
+            rule_metrics: PackedInt32Array::new(),
+            rule_subjects: PackedInt32Array::new(),
+            rule_relations: PackedInt32Array::new(),
+            rule_thresholds: PackedFloat32Array::new(),
             rule_targets: PackedInt32Array::new(),
-            rule_limits: PackedInt32Array::new(),
+            rule_values: PackedFloat32Array::new(),
+            rule_enabled: PackedInt32Array::new(),
+            rule_firing: PackedInt32Array::new(),
+            rule_locked: PackedInt32Array::new(),
             mrna_suppressed: PackedInt32Array::from(&[0i32; MRNA_COUNT][..]),
 
             dragged_particle_index: None,
@@ -580,6 +595,7 @@ impl Simulation {
             self.motors.len(),
             self.zymases.len(),
             self.expansion_count,
+            self.player_radius,
         );
 
         // Auto-consumption: particles near their target organelles are consumed
@@ -688,12 +704,7 @@ impl Simulation {
         self.sync_crafting_state();
         self.sync_rule_arrays();
 
-        tech::tick_techs(
-            &mut self.techs,
-            &self.rules,
-            self.motors.len(),
-            self.zymases.len(),
-        );
+        tech::tick_techs(&mut self.techs, &mut self.rules);
         self.sync_tech_arrays();
     }
 
@@ -708,16 +719,26 @@ impl Simulation {
 
     fn sync_rule_arrays(&mut self) {
         self.rule_count = self.rules.len() as i32;
-        self.rule_descriptions = PackedStringArray::new();
-        self.rule_firing = PackedInt32Array::new();
+        self.rule_metrics = PackedInt32Array::new();
+        self.rule_subjects = PackedInt32Array::new();
+        self.rule_relations = PackedInt32Array::new();
+        self.rule_thresholds = PackedFloat32Array::new();
         self.rule_targets = PackedInt32Array::new();
-        self.rule_limits = PackedInt32Array::new();
+        self.rule_values = PackedFloat32Array::new();
+        self.rule_enabled = PackedInt32Array::new();
+        self.rule_firing = PackedInt32Array::new();
+        self.rule_locked = PackedInt32Array::new();
 
         for rule in &self.rules {
-            self.rule_descriptions.push(&GString::from(&rule.description()));
-            self.rule_firing.push(if rule.firing { 1 } else { 0 });
+            self.rule_metrics.push(rule.metric as i32);
+            self.rule_subjects.push(rule.subject.strand_index() as i32);
+            self.rule_relations.push(rule.relation as i32);
+            self.rule_thresholds.push(rule.threshold);
             self.rule_targets.push(rule.target.strand_index() as i32);
-            self.rule_limits.push(rule.current_limit as i32);
+            self.rule_values.push(rule.current_value);
+            self.rule_enabled.push(if rule.enabled { 1 } else { 0 });
+            self.rule_firing.push(if rule.firing { 1 } else { 0 });
+            self.rule_locked.push(if rule.locked { 1 } else { 0 });
         }
 
         self.mrna_suppressed = PackedInt32Array::new();
@@ -998,6 +1019,92 @@ impl Simulation {
         self.dragged_mrna_index = None;
         self.drag_active = false;
         self.dragged_particle_type = -1;
+    }
+
+    #[func]
+    fn cycle_rule_metric(&mut self, i: i32) {
+        let idx = i as usize;
+        if idx < self.rules.len() && !self.rules[idx].locked {
+            let old_metric = self.rules[idx].metric;
+            let new_metric = old_metric.next();
+            self.rules[idx].metric = new_metric;
+            self.rules[idx].threshold = rules::default_threshold_for_metric(new_metric);
+        }
+    }
+
+    #[func]
+    fn cycle_rule_subject(&mut self, i: i32) {
+        let idx = i as usize;
+        if idx < self.rules.len() && !self.rules[idx].locked {
+            self.rules[idx].subject = self.rules[idx].subject.next();
+        }
+    }
+
+    #[func]
+    fn cycle_rule_relation(&mut self, i: i32) {
+        let idx = i as usize;
+        if idx < self.rules.len() && !self.rules[idx].locked {
+            self.rules[idx].relation = self.rules[idx].relation.next();
+        }
+    }
+
+    #[func]
+    fn cycle_rule_target(&mut self, i: i32) {
+        let idx = i as usize;
+        if idx < self.rules.len() && !self.rules[idx].locked {
+            self.rules[idx].target = self.rules[idx].target.next();
+        }
+    }
+
+    #[func]
+    fn adjust_rule_threshold(&mut self, i: i32, direction: i32) {
+        let idx = i as usize;
+        if idx < self.rules.len() && !self.rules[idx].locked {
+            let step = rules::threshold_step(self.rules[idx].metric);
+            let delta = step * direction as f32;
+            self.rules[idx].threshold = (self.rules[idx].threshold + delta).max(0.0);
+        }
+    }
+
+    #[func]
+    fn set_rule_threshold(&mut self, i: i32, value: f32) {
+        let idx = i as usize;
+        if idx < self.rules.len() && !self.rules[idx].locked {
+            self.rules[idx].threshold = value.max(0.0);
+        }
+    }
+
+    #[func]
+    fn toggle_rule_enabled(&mut self, i: i32) {
+        let idx = i as usize;
+        if idx < self.rules.len() && !self.rules[idx].locked {
+            self.rules[idx].enabled = !self.rules[idx].enabled;
+        }
+    }
+
+    #[func]
+    fn add_rule(&mut self) {
+        if self.rules.len() < rules::MAX_RULES {
+            self.rules.push(rules::Rule {
+                metric: rules::Metric::Count,
+                subject: rules::MrnaTarget::Zymase,
+                relation: rules::Relation::GreaterEqual,
+                threshold: rules::default_threshold_for_metric(rules::Metric::Count),
+                target: rules::MrnaTarget::Zymase,
+                enabled: true,
+                firing: false,
+                current_value: 0.0,
+                locked: false,
+            });
+        }
+    }
+
+    #[func]
+    fn remove_rule(&mut self, i: i32) {
+        let idx = i as usize;
+        if idx < self.rules.len() && !self.rules[idx].locked {
+            self.rules.remove(idx);
+        }
     }
 
     #[func]
