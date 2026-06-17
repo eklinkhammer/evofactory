@@ -116,7 +116,7 @@ pub fn default_threshold_for_metric(metric: Metric) -> f32 {
     match metric {
         Metric::Count => 3.0,
         Metric::Density => 0.005,
-        Metric::SurfaceDensity => 0.031,
+        Metric::SurfaceDensity => 0.027,
     }
 }
 
@@ -125,7 +125,7 @@ pub fn default_rules() -> Vec<Rule> {
         metric: Metric::SurfaceDensity,
         subject: MrnaTarget::Motor,
         relation: Relation::GreaterEqual,
-        threshold: 0.031,
+        threshold: 0.027,
         target: MrnaTarget::Motor,
         enabled: true,
         firing: false,
@@ -206,8 +206,8 @@ mod tests {
     #[test]
     fn surface_density_fires_at_threshold() {
         let mut rules = default_rules();
-        // 3 motors at radius 15: 3/(2*pi*15) ≈ 0.0318 >= 0.031
-        let sup = evaluate_suppressions(&mut rules, 3, 1, 0, 15.0);
+        // 4 motors at radius 23 (after 1 expansion): 4/(2*pi*23) ≈ 0.0277 >= 0.027
+        let sup = evaluate_suppressions(&mut rules, 4, 1, 1, 23.0);
         assert!(rules[0].firing);
         assert!(sup[1]); // motor strand suppressed
         assert!(!sup[0]);
@@ -217,8 +217,8 @@ mod tests {
     #[test]
     fn surface_density_idle_below_threshold() {
         let mut rules = default_rules();
-        // 1 motor at radius 15: 1/(2*pi*15) ≈ 0.0106 < 0.031
-        let sup = evaluate_suppressions(&mut rules, 1, 1, 0, 15.0);
+        // 3 motors at radius 23: 3/(2*pi*23) ≈ 0.0208 < 0.027
+        let sup = evaluate_suppressions(&mut rules, 3, 1, 1, 23.0);
         assert!(!rules[0].firing);
         assert!(!sup[1]);
     }
@@ -226,13 +226,13 @@ mod tests {
     #[test]
     fn surface_density_scales_with_radius() {
         let mut rules = default_rules();
-        // 3 motors at radius 30: 3/(2*pi*30) ≈ 0.0159 < 0.031
-        let sup = evaluate_suppressions(&mut rules, 3, 1, 0, 30.0);
+        // 4 motors at radius 40: 4/(2*pi*40) ≈ 0.0159 < 0.027
+        let sup = evaluate_suppressions(&mut rules, 4, 1, 0, 40.0);
         assert!(!rules[0].firing);
         assert!(!sup[1]);
 
-        // 6 motors at radius 30: 6/(2*pi*30) ≈ 0.0318 >= 0.031
-        let sup = evaluate_suppressions(&mut rules, 6, 1, 0, 30.0);
+        // 7 motors at radius 40: 7/(2*pi*40) ≈ 0.0279 >= 0.027
+        let sup = evaluate_suppressions(&mut rules, 7, 1, 0, 40.0);
         assert!(rules[0].firing);
         assert!(sup[1]);
     }
