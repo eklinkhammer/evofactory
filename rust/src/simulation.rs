@@ -176,6 +176,8 @@ pub struct Simulation {
     #[var]
     tech_panel_open: bool,
     #[var]
+    tech_selected: i32,
+    #[var]
     tech_count: i32,
     #[var]
     tech_names: PackedStringArray,
@@ -275,6 +277,7 @@ impl INode for Simulation {
             regulation_panel_open: false,
             techs: tech::default_techs(),
             tech_panel_open: false,
+            tech_selected: 0,
             tech_count: 0,
             tech_names: PackedStringArray::new(),
             tech_descriptions: PackedStringArray::new(),
@@ -768,6 +771,13 @@ impl Simulation {
     }
 
     #[func]
+    fn select_tech(&mut self, index: i32) {
+        if index >= 0 && (index as usize) < self.techs.len() {
+            self.tech_selected = index;
+        }
+    }
+
+    #[func]
     fn toggle_regulation_panel(&mut self) {
         self.regulation_panel_open = !self.regulation_panel_open;
     }
@@ -1152,6 +1162,7 @@ impl Simulation {
         // Reset techs
         self.techs = tech::default_techs();
         self.tech_panel_open = false;
+        self.tech_selected = 0;
 
         // Reset motors to single motor at angle 0
         self.motors = vec![Motor {

@@ -3,6 +3,7 @@ use crate::rules::{Relation, Rule};
 #[derive(Clone, Debug)]
 pub enum TechTrigger {
     RuleFiring { rule_index: usize },
+    None,
 }
 
 #[derive(Clone, Debug)]
@@ -15,13 +16,36 @@ pub struct Tech {
 }
 
 pub fn default_techs() -> Vec<Tech> {
-    vec![Tech {
-        name: "Motor Efficiency".into(),
-        description: "Reached motor production cap".into(),
-        progress: 0.0,
-        completed: false,
-        trigger: TechTrigger::RuleFiring { rule_index: 0 },
-    }]
+    vec![
+        Tech {
+            name: "Motor Efficiency".into(),
+            description: "Reached motor production cap".into(),
+            progress: 0.0,
+            completed: false,
+            trigger: TechTrigger::RuleFiring { rule_index: 0 },
+        },
+        Tech {
+            name: "Membrane Reinforcement".into(),
+            description: "Strengthen cell membrane to survive collisions".into(),
+            progress: 0.0,
+            completed: false,
+            trigger: TechTrigger::None,
+        },
+        Tech {
+            name: "ATP Synthesis II".into(),
+            description: "Improved ATP generation from glucose".into(),
+            progress: 0.0,
+            completed: false,
+            trigger: TechTrigger::None,
+        },
+        Tech {
+            name: "Flagellar Coordination".into(),
+            description: "Coordinate multiple motors for faster movement".into(),
+            progress: 0.0,
+            completed: false,
+            trigger: TechTrigger::None,
+        },
+    ]
 }
 
 pub fn tick_techs(techs: &mut [Tech], rules: &mut [Rule]) {
@@ -55,6 +79,9 @@ pub fn tick_techs(techs: &mut [Tech], rules: &mut [Rule]) {
                         }
                     };
                 }
+            }
+            TechTrigger::None => {
+                // Placeholder tech — never progresses
             }
         }
     }
@@ -126,5 +153,46 @@ mod tests {
         tick_techs(&mut techs, &mut rule_set);
         assert_eq!(techs[0].progress, 0.0);
         assert!(!techs[0].completed);
+    }
+
+    #[test]
+    fn tech_trigger_none_never_progresses() {
+        let mut techs = default_techs();
+        let mut rule_set = rules::default_rules();
+
+        // Tick multiple times with active rules
+        rules::evaluate_suppressions(&mut rule_set, 3, 1, 0, 15.0);
+        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set);
+
+        // Techs with TechTrigger::None should remain at 0 progress
+        for tech in &techs[1..] {
+            assert_eq!(tech.progress, 0.0, "Tech '{}' should have no progress", tech.name);
+            assert!(!tech.completed, "Tech '{}' should not be completed", tech.name);
+        }
+    }
+
+    #[test]
+    fn default_techs_returns_expected_entries() {
+        let techs = default_techs();
+        assert_eq!(techs.len(), 4);
+
+        assert_eq!(techs[0].name, "Motor Efficiency");
+        assert!(matches!(techs[0].trigger, TechTrigger::RuleFiring { rule_index: 0 }));
+
+        assert_eq!(techs[1].name, "Membrane Reinforcement");
+        assert!(matches!(techs[1].trigger, TechTrigger::None));
+
+        assert_eq!(techs[2].name, "ATP Synthesis II");
+        assert!(matches!(techs[2].trigger, TechTrigger::None));
+
+        assert_eq!(techs[3].name, "Flagellar Coordination");
+        assert!(matches!(techs[3].trigger, TechTrigger::None));
+
+        for tech in &techs {
+            assert_eq!(tech.progress, 0.0);
+            assert!(!tech.completed);
+        }
     }
 }
