@@ -63,16 +63,17 @@ pub fn tick_techs(techs: &mut [Tech], rules: &mut [Rule]) {
                     tech.completed = true;
                     // Unlock the rule now that the tech is researched
                     rules[rule_index].locked = false;
-                } else if rules[rule_index].threshold > 0.0 {
+                } else if rules[rule_index].current_threshold_value > 0.0 {
                     // Show gradual progress toward the threshold
                     let rule = &rules[rule_index];
+                    let thresh = rule.current_threshold_value;
                     tech.progress = match rule.relation {
                         Relation::GreaterEqual => {
-                            (rule.current_value / rule.threshold).clamp(0.0, 0.99)
+                            (rule.current_value / thresh).clamp(0.0, 0.99)
                         }
                         Relation::LessEqual => {
                             if rule.current_value > 0.0 {
-                                (rule.threshold / rule.current_value).clamp(0.0, 0.99)
+                                (thresh / rule.current_value).clamp(0.0, 0.99)
                             } else {
                                 0.99 // value is 0, which is <= any positive threshold
                             }

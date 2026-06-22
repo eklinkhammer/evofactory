@@ -169,6 +169,12 @@ pub struct Simulation {
     #[var]
     rule_locked: PackedInt32Array,
     #[var]
+    rule_threshold_modes: PackedInt32Array,
+    #[var]
+    rule_threshold_targets: PackedInt32Array,
+    #[var]
+    rule_threshold_values: PackedFloat32Array,
+    #[var]
     mrna_suppressed: PackedInt32Array,
 
     techs: Vec<Tech>,
@@ -293,6 +299,9 @@ impl INode for Simulation {
             rule_enabled: PackedInt32Array::new(),
             rule_firing: PackedInt32Array::new(),
             rule_locked: PackedInt32Array::new(),
+            rule_threshold_modes: PackedInt32Array::new(),
+            rule_threshold_targets: PackedInt32Array::new(),
+            rule_threshold_values: PackedFloat32Array::new(),
             mrna_suppressed: PackedInt32Array::from(&[0i32; MRNA_COUNT][..]),
 
             dragged_particle_index: None,
@@ -731,12 +740,27 @@ impl Simulation {
         self.rule_enabled = PackedInt32Array::new();
         self.rule_firing = PackedInt32Array::new();
         self.rule_locked = PackedInt32Array::new();
+        self.rule_threshold_modes = PackedInt32Array::new();
+        self.rule_threshold_targets = PackedInt32Array::new();
+        self.rule_threshold_values = PackedFloat32Array::new();
 
         for rule in &self.rules {
             self.rule_metrics.push(rule.metric as i32);
             self.rule_subjects.push(rule.subject.strand_index() as i32);
             self.rule_relations.push(rule.relation as i32);
-            self.rule_thresholds.push(rule.threshold);
+            match rule.threshold {
+                rules::Threshold::Fixed(v) => {
+                    self.rule_thresholds.push(v);
+                    self.rule_threshold_modes.push(0);
+                    self.rule_threshold_targets.push(-1);
+                }
+                rules::Threshold::Variable(ref_target) => {
+                    self.rule_thresholds.push(rule.current_threshold_value);
+                    self.rule_threshold_modes.push(1);
+                    self.rule_threshold_targets.push(ref_target.strand_index() as i32);
+                }
+            }
+            self.rule_threshold_values.push(rule.current_threshold_value);
             self.rule_targets.push(rule.target.strand_index() as i32);
             self.rule_values.push(rule.current_value);
             self.rule_enabled.push(if rule.enabled { 1 } else { 0 });
@@ -1035,10 +1059,11 @@ impl Simulation {
     fn cycle_rule_metric(&mut self, i: i32) {
         let idx = i as usize;
         if idx < self.rules.len() && !self.rules[idx].locked {
-            let old_metric = self.rules[idx].metric;
-            let new_metric = old_metric.next();
+            let new_metric = self.rules[idx].metric.next();
             self.rules[idx].metric = new_metric;
-            self.rules[idx].threshold = rules::default_threshold_for_metric(new_metric);
+            if matches!(self.rules[idx].threshold, rules::Threshold::Fixed(_)) {
+                self.rules[idx].threshold = rules::default_threshold_for_metric(new_metric);
+            }
         }
     }
 
@@ -1071,8 +1096,10 @@ impl Simulation {
         let idx = i as usize;
         if idx < self.rules.len() && !self.rules[idx].locked {
             let step = rules::threshold_step(self.rules[idx].metric);
-            let delta = step * direction as f32;
-            self.rules[idx].threshold = (self.rules[idx].threshold + delta).max(0.0);
+            if let rules::Threshold::Fixed(ref mut v) = self.rules[idx].threshold {
+                let delta = step * direction as f32;
+                *v = (*v + delta).max(0.0);
+            }
         }
     }
 
@@ -1080,7 +1107,25 @@ impl Simulation {
     fn set_rule_threshold(&mut self, i: i32, value: f32) {
         let idx = i as usize;
         if idx < self.rules.len() && !self.rules[idx].locked {
-            self.rules[idx].threshold = value.max(0.0);
+            self.rules[idx].threshold = rules::Threshold::Fixed(value.max(0.0));
+        }
+    }
+
+    #[func]
+    fn set_rule_threshold_variable(&mut self, i: i32, target_idx: i32) {
+        let idx = i as usize;
+        if idx < self.rules.len() && !self.rules[idx].locked {
+            self.rules[idx].threshold =
+                rules::Threshold::Variable(rules::MrnaTarget::from_index(target_idx as usize));
+        }
+    }
+
+    #[func]
+    fn set_rule_threshold_fixed(&mut self, i: i32) {
+        let idx = i as usize;
+        if idx < self.rules.len() && !self.rules[idx].locked {
+            self.rules[idx].threshold =
+                rules::default_threshold_for_metric(self.rules[idx].metric);
         }
     }
 
@@ -1104,6 +1149,7 @@ impl Simulation {
                 enabled: true,
                 firing: false,
                 current_value: 0.0,
+                current_threshold_value: 0.0,
                 locked: false,
             });
         }

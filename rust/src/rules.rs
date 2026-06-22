@@ -89,16 +89,23 @@ impl MrnaTarget {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Threshold {
+    Fixed(f32),
+    Variable(MrnaTarget),
+}
+
 #[derive(Clone, Debug)]
 pub struct Rule {
     pub metric: Metric,
     pub subject: MrnaTarget,
     pub relation: Relation,
-    pub threshold: f32,
+    pub threshold: Threshold,
     pub target: MrnaTarget,
     pub enabled: bool,
     pub firing: bool,
     pub current_value: f32,
+    pub current_threshold_value: f32,
     pub locked: bool,
 }
 
@@ -112,12 +119,12 @@ pub fn threshold_step(metric: Metric) -> f32 {
     }
 }
 
-pub fn default_threshold_for_metric(metric: Metric) -> f32 {
-    match metric {
+pub fn default_threshold_for_metric(metric: Metric) -> Threshold {
+    Threshold::Fixed(match metric {
         Metric::Count => 3.0,
         Metric::Density => 0.005,
         Metric::SurfaceDensity => 0.027,
-    }
+    })
 }
 
 pub fn default_rules() -> Vec<Rule> {
@@ -125,17 +132,47 @@ pub fn default_rules() -> Vec<Rule> {
         metric: Metric::SurfaceDensity,
         subject: MrnaTarget::Motor,
         relation: Relation::GreaterEqual,
-        threshold: 0.027,
+        threshold: Threshold::Fixed(0.027),
         target: MrnaTarget::Motor,
         enabled: true,
         firing: false,
         current_value: 0.0,
+        current_threshold_value: 0.0,
         locked: true,
     }]
 }
 
+pub fn compute_metric_value(
+    metric: Metric,
+    target: MrnaTarget,
+    motor_count: usize,
+    zymase_count: usize,
+    expansion_count: i32,
+    radius: f32,
+) -> f32 {
+    let pi = std::f32::consts::PI;
+
+    let raw_count = match target {
+        MrnaTarget::Motor => motor_count as f32,
+        MrnaTarget::Zymase => zymase_count as f32,
+        MrnaTarget::Membrane => expansion_count as f32,
+    };
+
+    match metric {
+        Metric::Count => raw_count,
+        Metric::Density => {
+            let area = pi * radius * radius;
+            if area > 0.0 { raw_count / area } else { 0.0 }
+        }
+        Metric::SurfaceDensity => {
+            let circumference = 2.0 * pi * radius;
+            if circumference > 0.0 { raw_count / circumference } else { 0.0 }
+        }
+    }
+}
+
 /// Evaluate all rules and return per-strand suppression flags.
-/// Also updates each rule's `firing` and `current_value` fields.
+/// Also updates each rule's `firing`, `current_value`, and `current_threshold_value` fields.
 pub fn evaluate_suppressions(
     rules: &mut Vec<Rule>,
     motor_count: usize,
@@ -145,37 +182,40 @@ pub fn evaluate_suppressions(
 ) -> [bool; MRNA_COUNT] {
     let mut suppressions = [false; MRNA_COUNT];
 
-    let pi = std::f32::consts::PI;
-
     for rule in rules.iter_mut() {
         if !rule.enabled {
             rule.firing = false;
             continue;
         }
 
-        let raw_count = match rule.subject {
-            MrnaTarget::Motor => motor_count as f32,
-            MrnaTarget::Zymase => zymase_count as f32,
-            MrnaTarget::Membrane => expansion_count as f32,
-        };
-
-        let value = match rule.metric {
-            Metric::Count => raw_count,
-            Metric::Density => {
-                let area = pi * player_radius * player_radius;
-                if area > 0.0 { raw_count / area } else { 0.0 }
-            }
-            Metric::SurfaceDensity => {
-                let circumference = 2.0 * pi * player_radius;
-                if circumference > 0.0 { raw_count / circumference } else { 0.0 }
-            }
-        };
+        let value = compute_metric_value(
+            rule.metric,
+            rule.subject,
+            motor_count,
+            zymase_count,
+            expansion_count,
+            player_radius,
+        );
 
         rule.current_value = value;
 
+        let threshold_value = match rule.threshold {
+            Threshold::Fixed(v) => v,
+            Threshold::Variable(ref_target) => compute_metric_value(
+                rule.metric,
+                ref_target,
+                motor_count,
+                zymase_count,
+                expansion_count,
+                player_radius,
+            ),
+        };
+
+        rule.current_threshold_value = threshold_value;
+
         rule.firing = match rule.relation {
-            Relation::GreaterEqual => value >= rule.threshold,
-            Relation::LessEqual => value <= rule.threshold,
+            Relation::GreaterEqual => value >= threshold_value,
+            Relation::LessEqual => value <= threshold_value,
         };
 
         if rule.firing {
@@ -252,11 +292,12 @@ mod tests {
             metric: Metric::Count,
             subject: MrnaTarget::Motor,
             relation: Relation::GreaterEqual,
-            threshold: 3.0,
+            threshold: Threshold::Fixed(3.0),
             target: MrnaTarget::Motor,
             enabled: true,
             firing: false,
             current_value: 0.0,
+            current_threshold_value: 0.0,
             locked: false,
         }];
         let sup = evaluate_suppressions(&mut rules, 3, 1, 0, 15.0);
@@ -274,11 +315,12 @@ mod tests {
             metric: Metric::Count,
             subject: MrnaTarget::Zymase,
             relation: Relation::LessEqual,
-            threshold: 2.0,
+            threshold: Threshold::Fixed(2.0),
             target: MrnaTarget::Zymase,
             enabled: true,
             firing: false,
             current_value: 0.0,
+            current_threshold_value: 0.0,
             locked: false,
         }];
         let sup = evaluate_suppressions(&mut rules, 1, 2, 0, 15.0);
@@ -296,11 +338,12 @@ mod tests {
             metric: Metric::Count,
             subject: MrnaTarget::Membrane,
             relation: Relation::GreaterEqual,
-            threshold: 5.0,
+            threshold: Threshold::Fixed(5.0),
             target: MrnaTarget::Membrane,
             enabled: true,
             firing: false,
             current_value: 0.0,
+            current_threshold_value: 0.0,
             locked: false,
         }];
         let sup = evaluate_suppressions(&mut rules, 1, 1, 5, 15.0);
@@ -345,5 +388,101 @@ mod tests {
         evaluate_suppressions(&mut rules, 3, 1, 0, 15.0);
         // 3 / (2 * pi * 15) ≈ 0.0318
         assert!((rules[0].current_value - 3.0 / (2.0 * std::f32::consts::PI * 15.0)).abs() < 0.001);
+    }
+
+    #[test]
+    fn variable_threshold_count_comparison() {
+        // Suppress Zymase when Count(Zymase) >= Count(Motor)
+        let mut rules = vec![Rule {
+            metric: Metric::Count,
+            subject: MrnaTarget::Zymase,
+            relation: Relation::GreaterEqual,
+            threshold: Threshold::Variable(MrnaTarget::Motor),
+            target: MrnaTarget::Zymase,
+            enabled: true,
+            firing: false,
+            current_value: 0.0,
+            current_threshold_value: 0.0,
+            locked: false,
+        }];
+
+        // 3 zymases >= 2 motors → fires
+        let sup = evaluate_suppressions(&mut rules, 2, 3, 0, 15.0);
+        assert!(rules[0].firing);
+        assert!(sup[0]);
+
+        // 1 zymase < 2 motors → does not fire
+        let sup = evaluate_suppressions(&mut rules, 2, 1, 0, 15.0);
+        assert!(!rules[0].firing);
+        assert!(!sup[0]);
+    }
+
+    #[test]
+    fn variable_threshold_density_comparison() {
+        // Suppress Motor when Density(Motor) >= Density(Zymase)
+        let mut rules = vec![Rule {
+            metric: Metric::Density,
+            subject: MrnaTarget::Motor,
+            relation: Relation::GreaterEqual,
+            threshold: Threshold::Variable(MrnaTarget::Zymase),
+            target: MrnaTarget::Motor,
+            enabled: true,
+            firing: false,
+            current_value: 0.0,
+            current_threshold_value: 0.0,
+            locked: false,
+        }];
+
+        // 5 motors, 3 zymases at r=15 → density(motor) > density(zymase) → fires
+        let sup = evaluate_suppressions(&mut rules, 5, 3, 0, 15.0);
+        assert!(rules[0].firing);
+        assert!(sup[1]);
+
+        // 2 motors, 5 zymases → density(motor) < density(zymase) → does not fire
+        let sup = evaluate_suppressions(&mut rules, 2, 5, 0, 15.0);
+        assert!(!rules[0].firing);
+        assert!(!sup[1]);
+    }
+
+    #[test]
+    fn variable_threshold_equal_values() {
+        // Count(Motor) >= Count(Zymase) with equal counts → fires (>=)
+        let mut rules = vec![Rule {
+            metric: Metric::Count,
+            subject: MrnaTarget::Motor,
+            relation: Relation::GreaterEqual,
+            threshold: Threshold::Variable(MrnaTarget::Zymase),
+            target: MrnaTarget::Motor,
+            enabled: true,
+            firing: false,
+            current_value: 0.0,
+            current_threshold_value: 0.0,
+            locked: false,
+        }];
+
+        // 3 motors == 3 zymases → fires
+        let sup = evaluate_suppressions(&mut rules, 3, 3, 0, 15.0);
+        assert!(rules[0].firing);
+        assert!(sup[1]);
+    }
+
+    #[test]
+    fn variable_threshold_resolved_value_stored() {
+        let mut rules = vec![Rule {
+            metric: Metric::Count,
+            subject: MrnaTarget::Zymase,
+            relation: Relation::GreaterEqual,
+            threshold: Threshold::Variable(MrnaTarget::Motor),
+            target: MrnaTarget::Zymase,
+            enabled: true,
+            firing: false,
+            current_value: 0.0,
+            current_threshold_value: 0.0,
+            locked: false,
+        }];
+
+        evaluate_suppressions(&mut rules, 4, 2, 0, 15.0);
+        assert_eq!(rules[0].current_value, 2.0); // zymase count
+        assert_eq!(rules[0].current_threshold_value, 4.0); // motor count (the threshold reference)
     }
 }
