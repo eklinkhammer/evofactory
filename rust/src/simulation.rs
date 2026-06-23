@@ -1,5 +1,8 @@
 use godot::prelude::*;
 use rand::Rng;
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
+use std::collections::HashSet;
 
 use crate::types::{InteriorParticle, Zymase, Motor, INTERIOR_RADIUS, MAX_ATP, MOTOR_MEMBRANE_RADIUS, RESOURCE_RADIUS, MRNA_COUNT, CAPACITY_SCALE, MIN_RADIUS};
 use crate::crafting::{self, CraftOutput};
@@ -9,12 +12,10 @@ use crate::tech::{self, Tech};
 
 type CellResource = crate::types::Resource;
 
-const WORLD_BOUND: f32 = 500.0;
-const SPAWN_BOUND: f32 = 480.0;
-const MIN_RESPAWN_DIST: f32 = 100.0;
+const CHUNK_SIZE: f32 = 200.0;
+const RESOURCES_PER_CHUNK: i32 = 2;
+const CHUNK_MARGIN: f32 = 200.0; // extra margin beyond visible area
 const DRIFT_SPEED: f32 = 5.0;
-const START_AREA_RADIUS: f32 = 150.0;
-const START_AREA_WEIGHT: f32 = 3.0;
 
 const MOVEMENT_ATP_COST: f32 = 0.5;
 const SIZE_METABOLISM_FACTOR: f32 = 0.02;
@@ -51,8 +52,6 @@ pub struct Simulation {
 
     #[var]
     resource_radius: f32,
-    #[var]
-    world_bound: f32,
 
     #[var]
     player_atp: f32,
@@ -67,6 +66,11 @@ pub struct Simulation {
     velocity_y: f32,
 
     resources: Vec<CellResource>,
+    active_chunks: HashSet<(i32, i32)>,
+    view_min_wx: f32,
+    view_max_wx: f32,
+    view_min_wy: f32,
+    view_max_wy: f32,
 
     #[var]
     interior_view: bool,
@@ -219,7 +223,6 @@ impl INode for Simulation {
             resource_ys: PackedFloat32Array::new(),
             resource_types: PackedInt32Array::new(),
             resource_radius: RESOURCE_RADIUS,
-            world_bound: WORLD_BOUND,
             player_atp: STARTING_ATP,
             player_max_atp: MAX_ATP,
             player_alive: true,
@@ -227,6 +230,11 @@ impl INode for Simulation {
             velocity_x: 0.0,
             velocity_y: 0.0,
             resources: Vec::new(),
+            active_chunks: HashSet::new(),
+            view_min_wx: -500.0,
+            view_max_wx: 500.0,
+            view_min_wy: -500.0,
+            view_max_wy: 500.0,
             interior_view: false,
             interior_particles: Vec::new(),
             interior_xs: PackedFloat32Array::new(),
@@ -386,35 +394,82 @@ impl Simulation {
     }
 
     #[func]
-    fn spawn_resources(&mut self, count: i32) {
-        let mut rng = rand::thread_rng();
-        let threshold = START_AREA_WEIGHT / (START_AREA_WEIGHT + 1.0);
-        for _ in 0..count {
-            let (x, y) = if rng.gen::<f32>() < threshold {
-                // Spawn near origin (rejection sampling within circle)
-                loop {
-                    let cx = rng.gen_range(-START_AREA_RADIUS..START_AREA_RADIUS);
-                    let cy = rng.gen_range(-START_AREA_RADIUS..START_AREA_RADIUS);
-                    if cx * cx + cy * cy <= START_AREA_RADIUS * START_AREA_RADIUS {
-                        break (cx, cy);
-                    }
-                }
-            } else {
-                (
-                    rng.gen_range(-SPAWN_BOUND..SPAWN_BOUND),
-                    rng.gen_range(-SPAWN_BOUND..SPAWN_BOUND),
-                )
-            };
-            let resource_type = rng.gen_range(0..2);
-            let amount = 1.0;
-            self.resources.push(CellResource {
-                x,
-                y,
-                resource_type,
-                amount,
-            });
+    fn set_view_bounds(&mut self, min_wx: f32, max_wx: f32, min_wy: f32, max_wy: f32) {
+        self.view_min_wx = min_wx;
+        self.view_max_wx = max_wx;
+        self.view_min_wy = min_wy;
+        self.view_max_wy = max_wy;
+    }
+
+    fn chunk_seed(cx: i32, cy: i32) -> u64 {
+        let a = cx as u64;
+        let b = cy as u64;
+        a.wrapping_mul(2654435761).wrapping_add(b.wrapping_mul(2246822519))
+    }
+
+    fn update_chunks(&mut self) {
+        // Compute desired chunks from view bounds + margin
+        let mut min_cx = ((self.view_min_wx - CHUNK_MARGIN) / CHUNK_SIZE).floor() as i32;
+        let mut max_cx = ((self.view_max_wx + CHUNK_MARGIN) / CHUNK_SIZE).floor() as i32;
+        let mut min_cy = ((self.view_min_wy - CHUNK_MARGIN) / CHUNK_SIZE).floor() as i32;
+        let mut max_cy = ((self.view_max_wy + CHUNK_MARGIN) / CHUNK_SIZE).floor() as i32;
+
+        // Cap total chunk count to prevent memory exhaustion at extreme zoom
+        let player_cx = (self.player_x / CHUNK_SIZE).floor() as i32;
+        let player_cy = (self.player_y / CHUNK_SIZE).floor() as i32;
+        let span_x = (max_cx - min_cx + 1) as i64;
+        let span_y = (max_cy - min_cy + 1) as i64;
+        if span_x * span_y > 2500 {
+            min_cx = player_cx - 8;
+            max_cx = player_cx + 8;
+            min_cy = player_cy - 8;
+            max_cy = player_cy + 8;
         }
-        self.sync_packed_arrays();
+
+        let mut desired = HashSet::new();
+        for cx in min_cx..=max_cx {
+            for cy in min_cy..=max_cy {
+                desired.insert((cx, cy));
+            }
+        }
+
+        // Always keep chunks within radius 3 of the player loaded
+        // so interior view (high zoom) doesn't unload nearby chunks
+        for cx in (player_cx - 3)..=(player_cx + 3) {
+            for cy in (player_cy - 3)..=(player_cy + 3) {
+                desired.insert((cx, cy));
+            }
+        }
+
+        // Remove resources belonging to chunks leaving the active set
+        let leaving: HashSet<(i32, i32)> = self.active_chunks.difference(&desired).copied().collect();
+        if !leaving.is_empty() {
+            self.resources.retain(|r| !leaving.contains(&(r.chunk_x, r.chunk_y)));
+        }
+
+        // Generate resources for newly active chunks
+        let entering: Vec<(i32, i32)> = desired.difference(&self.active_chunks).copied().collect();
+        for (cx, cy) in entering {
+            let seed = Self::chunk_seed(cx, cy);
+            let mut rng = SmallRng::seed_from_u64(seed);
+            let base_x = cx as f32 * CHUNK_SIZE;
+            let base_y = cy as f32 * CHUNK_SIZE;
+            for _ in 0..RESOURCES_PER_CHUNK {
+                let x = base_x + rng.gen_range(0.0..CHUNK_SIZE);
+                let y = base_y + rng.gen_range(0.0..CHUNK_SIZE);
+                let resource_type = rng.gen_range(0..2);
+                self.resources.push(CellResource {
+                    x,
+                    y,
+                    resource_type,
+                    amount: 1.0,
+                    chunk_x: cx,
+                    chunk_y: cy,
+                });
+            }
+        }
+
+        self.active_chunks = desired;
     }
 
     fn sync_packed_arrays(&mut self) {
@@ -427,26 +482,6 @@ impl Simulation {
             self.resource_ys.push(r.y);
             self.resource_types.push(r.resource_type);
         }
-    }
-
-    fn respawn_resource(&mut self, index: usize) {
-        let mut rng = rand::thread_rng();
-        let mut x = 0.0;
-        let mut y = 0.0;
-        for _ in 0..100 {
-            x = rng.gen_range(-SPAWN_BOUND..SPAWN_BOUND);
-            y = rng.gen_range(-SPAWN_BOUND..SPAWN_BOUND);
-            let dx = x - self.player_x;
-            let dy = y - self.player_y;
-            let dist = (dx * dx + dy * dy).sqrt();
-            if dist > MIN_RESPAWN_DIST {
-                break;
-            }
-        }
-        self.resources[index].x = x;
-        self.resources[index].y = y;
-        self.resources[index].resource_type = rng.gen_range(0..2);
-        self.resources[index].amount = 1.0;
     }
 
     fn mrna_xs_slice(&self) -> Vec<f32> {
@@ -465,39 +500,22 @@ impl Simulation {
 
         let dt = delta as f32;
         let damping = 0.9_f32.powf(dt * 60.0);
-        let bound = WORLD_BOUND;
 
-        // Update player position
+        // Update player position (no bounds — infinite world)
         self.player_x += self.velocity_x * dt;
         self.player_y += self.velocity_y * dt;
 
         self.velocity_x *= damping;
         self.velocity_y *= damping;
 
-        // Bounce off world edges
-        if self.player_x > bound {
-            self.player_x = bound;
-            self.velocity_x = -self.velocity_x * 0.5;
-        } else if self.player_x < -bound {
-            self.player_x = -bound;
-            self.velocity_x = -self.velocity_x * 0.5;
-        }
-
-        if self.player_y > bound {
-            self.player_y = bound;
-            self.velocity_y = -self.velocity_y * 0.5;
-        } else if self.player_y < -bound {
-            self.player_y = -bound;
-            self.velocity_y = -self.velocity_y * 0.5;
-        }
+        // Load/unload chunks around player
+        self.update_chunks();
 
         // Drift resources
         let mut rng = rand::thread_rng();
         for r in &mut self.resources {
             r.x += rng.gen_range(-DRIFT_SPEED..DRIFT_SPEED) * dt;
             r.y += rng.gen_range(-DRIFT_SPEED..DRIFT_SPEED) * dt;
-            r.x = r.x.clamp(-bound, bound);
-            r.y = r.y.clamp(-bound, bound);
         }
 
         // Check absorption
@@ -528,10 +546,11 @@ impl Simulation {
             interior::apply_absorption(&mut self.interior_particles, event, &mut rng);
         }
 
-        // Respawn absorbed resources
-        let respawn_indices: Vec<usize> = absorption_events.iter().map(|e| e.resource_index).collect();
-        for i in respawn_indices {
-            self.respawn_resource(i);
+        // Remove absorbed resources (sort descending for safe swap_remove)
+        let mut remove_indices: Vec<usize> = absorption_events.iter().map(|e| e.resource_index).collect();
+        remove_indices.sort_unstable_by(|a, b| b.cmp(a));
+        for i in remove_indices {
+            self.resources.swap_remove(i);
         }
 
         // Movement-based metabolism (distribute across all motors)
@@ -1217,9 +1236,10 @@ impl Simulation {
             charge: STARTING_ATP,
         }];
 
-        let count = self.resources.len() as i32;
         self.resources.clear();
-        self.spawn_resources(count);
+        self.active_chunks.clear();
+        self.update_chunks();
+        self.sync_packed_arrays();
         self.sync_interior_arrays();
         self.sync_motor_arrays();
         self.sync_zymase_arrays();

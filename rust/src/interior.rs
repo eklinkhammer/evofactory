@@ -329,6 +329,8 @@ mod tests {
             y: 0.0,
             resource_type: 0,
             amount: 1.0,
+            chunk_x: 0,
+            chunk_y: 0,
         }];
         let mut rng = rand::thread_rng();
         let events =
@@ -344,6 +346,8 @@ mod tests {
             y: 0.0,
             resource_type: 0,
             amount: 1.0,
+            chunk_x: 0,
+            chunk_y: 0,
         }];
         let mut rng = rand::thread_rng();
         let events =
@@ -358,6 +362,8 @@ mod tests {
             y: 0.0,
             resource_type: 0,
             amount: 1.0,
+            chunk_x: 0,
+            chunk_y: 0,
         }];
         let mut rng = rand::thread_rng();
         let events =

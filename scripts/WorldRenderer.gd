@@ -1,46 +1,72 @@
 extends Node2D
 
 @onready var simulation: Node = get_node("../Simulation")
+@onready var camera: Camera2D = get_node("../Camera")
 
 func world_to_screen(wx: float, wy: float) -> Vector2:
 	return Vector2(wx - wy, (wx + wy) * 0.5)
 
 func _draw() -> void:
-	# World boundary diamond (square world projected to dimetric)
-	var bound: float = simulation.world_bound
-	var corners: Array[Vector2] = [
-		world_to_screen(bound, bound),    # top
-		world_to_screen(bound, -bound),   # right
-		world_to_screen(-bound, -bound),  # bottom
-		world_to_screen(-bound, bound),   # left
-	]
+	# Compute visible area from camera
+	var vp_size := get_viewport_rect().size
+	var cam_pos := camera.position
+	var cam_zoom := camera.zoom
+	# Half-size in screen coords
+	var half_w: float = (vp_size.x / cam_zoom.x) * 0.5
+	var half_h: float = (vp_size.y / cam_zoom.y) * 0.5
 
-	# Ground fill
+	# Ground fill — large rect covering visible area
 	var ground_color := Color(0.12, 0.18, 0.12)
-	var packed_corners := PackedVector2Array(corners)
-	draw_colored_polygon(packed_corners, ground_color)
+	var ground_rect := Rect2(
+		cam_pos.x - half_w - 100.0,
+		cam_pos.y - half_h - 100.0,
+		half_w * 2.0 + 200.0,
+		half_h * 2.0 + 200.0
+	)
+	draw_rect(ground_rect, ground_color, true)
 
-	# Grid lines
+	# Grid lines — compute world-space range visible on screen
+	# Inverse of dimetric: wx = sy + sx/2, wy = sy - sx/2
+	# We need the world-coord bounding box that maps into the visible screen rect
+	var screen_left: float = cam_pos.x - half_w
+	var screen_right: float = cam_pos.x + half_w
+	var screen_top: float = cam_pos.y - half_h
+	var screen_bottom: float = cam_pos.y + half_h
+
+	# Map screen corners back to world coords to find world range
+	# screen_to_world: wx = sy + sx/2, wy = sy - sx/2
+	var corners_wx: Array[float] = []
+	var corners_wy: Array[float] = []
+	for sx in [screen_left, screen_right]:
+		for sy in [screen_top, screen_bottom]:
+			corners_wx.append(sy + sx * 0.5)
+			corners_wy.append(sy - sx * 0.5)
+
+	var world_min_x: float = corners_wx.min()
+	var world_max_x: float = corners_wx.max()
+	var world_min_y: float = corners_wy.min()
+	var world_max_y: float = corners_wy.max()
+
 	var grid_color := Color(0.18, 0.24, 0.18)
 	var step := 100.0
-	var val := -bound
-	while val <= bound:
-		draw_line(
-			world_to_screen(val, -bound),
-			world_to_screen(val, bound),
-			grid_color, 1.0
-		)
-		draw_line(
-			world_to_screen(-bound, val),
-			world_to_screen(bound, val),
-			grid_color, 1.0
-		)
+
+	# Snap to grid
+	var start_x: float = floor(world_min_x / step) * step
+	var start_y: float = floor(world_min_y / step) * step
+
+	var val := start_x
+	while val <= world_max_x:
+		var p0 := world_to_screen(val, world_min_y)
+		var p1 := world_to_screen(val, world_max_y)
+		draw_line(p0, p1, grid_color, 1.0)
 		val += step
 
-	# Boundary outline
-	var border_color := Color(0.4, 0.55, 0.4)
-	for i in range(4):
-		draw_line(corners[i], corners[(i + 1) % 4], border_color, 2.0)
+	val = start_y
+	while val <= world_max_y:
+		var p0 := world_to_screen(world_min_x, val)
+		var p1 := world_to_screen(world_max_x, val)
+		draw_line(p0, p1, grid_color, 1.0)
+		val += step
 
 	# Resources
 	if simulation:

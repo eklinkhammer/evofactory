@@ -9,7 +9,7 @@ var dragging := false
 var press_pos := Vector2.ZERO
 
 func _ready() -> void:
-	simulation.spawn_resources(60)
+	pass  # Chunks generate resources automatically on first tick
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -68,6 +68,13 @@ func _process(delta: float) -> void:
 		var s: float = simulation.player_radius / simulation.interior_radius
 		interior_renderer.scale = Vector2(s, s)
 
+	# Keep camera centered on player in exterior mode
+	if not simulation.interior_view:
+		camera.position = world_renderer.world_to_screen(simulation.player_x, simulation.player_y)
+
+	# Pass visible world bounds to simulation for chunk loading
+	_update_view_bounds()
+
 	# Restart when dead
 	if not simulation.player_alive:
 		if Input.is_key_pressed(KEY_R):
@@ -80,31 +87,29 @@ func _process(delta: float) -> void:
 			interior_renderer.queue_redraw()
 		return
 
-	# Don't move player when shift is held (shift+arrows = camera pan)
-	if not Input.is_key_pressed(KEY_SHIFT):
-		var dx := 0.0
-		var dy := 0.0
+	var dx := 0.0
+	var dy := 0.0
 
-		if Input.is_action_pressed("ui_right"):
-			dx += 1.0
-		if Input.is_action_pressed("ui_left"):
-			dx -= 1.0
-		if Input.is_action_pressed("ui_down"):
-			dy += 1.0
-		if Input.is_action_pressed("ui_up"):
-			dy -= 1.0
+	if Input.is_action_pressed("ui_right"):
+		dx += 1.0
+	if Input.is_action_pressed("ui_left"):
+		dx -= 1.0
+	if Input.is_action_pressed("ui_down"):
+		dy += 1.0
+	if Input.is_action_pressed("ui_up"):
+		dy -= 1.0
 
-		# Normalize diagonal movement
-		if dx != 0.0 and dy != 0.0:
-			var inv_sqrt2 := 0.7071
-			dx *= inv_sqrt2
-			dy *= inv_sqrt2
+	# Normalize diagonal movement
+	if dx != 0.0 and dy != 0.0:
+		var inv_sqrt2 := 0.7071
+		dx *= inv_sqrt2
+		dy *= inv_sqrt2
 
-		# Transform screen-space input to world-space for dimetric projection
-		var wx := dx * 0.5 + dy
-		var wy := -dx * 0.5 + dy
+	# Transform screen-space input to world-space for dimetric projection
+	var wx := dx * 0.5 + dy
+	var wy := -dx * 0.5 + dy
 
-		simulation.move_player(wx, wy)
+	simulation.move_player(wx, wy)
 
 	# Hover tracking for interior view
 	if simulation.interior_view:
@@ -117,6 +122,32 @@ func _process(delta: float) -> void:
 	world_renderer.queue_redraw()
 	if simulation.interior_view:
 		interior_renderer.queue_redraw()
+
+func _update_view_bounds() -> void:
+	var vp_size := get_viewport_rect().size
+	var cam_pos := camera.position
+	var cam_zoom := camera.zoom
+	var half_w: float = (vp_size.x / cam_zoom.x) * 0.5
+	var half_h: float = (vp_size.y / cam_zoom.y) * 0.5
+	var sl: float = cam_pos.x - half_w
+	var sr: float = cam_pos.x + half_w
+	var st: float = cam_pos.y - half_h
+	var sb: float = cam_pos.y + half_h
+	# Inverse dimetric: wx = sy + sx/2, wy = sy - sx/2
+	# Check all 4 screen corners to get world-space AABB
+	var min_wx: float = INF
+	var max_wx: float = -INF
+	var min_wy: float = INF
+	var max_wy: float = -INF
+	for sx in [sl, sr]:
+		for sy in [st, sb]:
+			var wx: float = sy + sx * 0.5
+			var wy: float = sy - sx * 0.5
+			min_wx = min(min_wx, wx)
+			max_wx = max(max_wx, wx)
+			min_wy = min(min_wy, wy)
+			max_wy = max(max_wy, wy)
+	simulation.set_view_bounds(min_wx, max_wx, min_wy, max_wy)
 
 func _check_tooltip_click(local_pos: Vector2) -> void:
 	var hit := -1

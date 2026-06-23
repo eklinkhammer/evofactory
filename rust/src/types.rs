@@ -17,6 +17,8 @@ pub struct Resource {
     pub y: f32,
     pub resource_type: i32, // 0 = glucose, 1 = amino acid
     pub amount: f32,
+    pub chunk_x: i32,
+    pub chunk_y: i32,
 }
 
 pub struct Zymase {
