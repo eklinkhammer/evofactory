@@ -8,6 +8,7 @@ use crate::types::{InteriorParticle, Zymase, Motor, INTERIOR_RADIUS, MAX_ATP, MO
 use crate::crafting::{self, CraftOutput};
 use crate::interior;
 use crate::rules::{self, Rule};
+use crate::sync;
 use crate::tech::{self, Tech};
 
 type CellResource = crate::types::Resource;
@@ -821,63 +822,36 @@ impl Simulation {
     }
 
     fn sync_rule_arrays(&mut self) {
+        let a = sync::build_rule_arrays(&self.rules, &self.current_suppressions);
         self.rule_count = self.rules.len() as i32;
-        self.rule_metrics = PackedInt32Array::new();
-        self.rule_subjects = PackedInt32Array::new();
-        self.rule_relations = PackedInt32Array::new();
-        self.rule_thresholds = PackedFloat32Array::new();
-        self.rule_targets = PackedInt32Array::new();
-        self.rule_values = PackedFloat32Array::new();
-        self.rule_enabled = PackedInt32Array::new();
-        self.rule_firing = PackedInt32Array::new();
-        self.rule_locked = PackedInt32Array::new();
-        self.rule_threshold_modes = PackedInt32Array::new();
-        self.rule_threshold_targets = PackedInt32Array::new();
-        self.rule_threshold_values = PackedFloat32Array::new();
-
-        for rule in &self.rules {
-            self.rule_metrics.push(rule.metric as i32);
-            self.rule_subjects.push(rule.subject.strand_index() as i32);
-            self.rule_relations.push(rule.relation as i32);
-            match rule.threshold {
-                rules::Threshold::Fixed(v) => {
-                    self.rule_thresholds.push(v);
-                    self.rule_threshold_modes.push(0);
-                    self.rule_threshold_targets.push(-1);
-                }
-                rules::Threshold::Variable(ref_target) => {
-                    self.rule_thresholds.push(rule.current_threshold_value);
-                    self.rule_threshold_modes.push(1);
-                    self.rule_threshold_targets.push(ref_target.strand_index() as i32);
-                }
-            }
-            self.rule_threshold_values.push(rule.current_threshold_value);
-            self.rule_targets.push(rule.target.strand_index() as i32);
-            self.rule_values.push(rule.current_value);
-            self.rule_enabled.push(if rule.enabled { 1 } else { 0 });
-            self.rule_firing.push(if rule.firing { 1 } else { 0 });
-            self.rule_locked.push(if rule.locked { 1 } else { 0 });
-        }
-
-        self.mrna_suppressed = PackedInt32Array::new();
-        for i in 0..MRNA_COUNT {
-            self.mrna_suppressed.push(if self.current_suppressions[i] { 1 } else { 0 });
-        }
+        self.rule_metrics = PackedInt32Array::from(a.metrics.as_slice());
+        self.rule_subjects = PackedInt32Array::from(a.subjects.as_slice());
+        self.rule_relations = PackedInt32Array::from(a.relations.as_slice());
+        self.rule_thresholds = PackedFloat32Array::from(a.thresholds.as_slice());
+        self.rule_targets = PackedInt32Array::from(a.targets.as_slice());
+        self.rule_values = PackedFloat32Array::from(a.values.as_slice());
+        self.rule_enabled = PackedInt32Array::from(a.enabled.as_slice());
+        self.rule_firing = PackedInt32Array::from(a.firing.as_slice());
+        self.rule_locked = PackedInt32Array::from(a.locked.as_slice());
+        self.rule_threshold_modes = PackedInt32Array::from(a.threshold_modes.as_slice());
+        self.rule_threshold_targets = PackedInt32Array::from(a.threshold_targets.as_slice());
+        self.rule_threshold_values = PackedFloat32Array::from(a.threshold_values.as_slice());
+        self.mrna_suppressed = PackedInt32Array::from(a.mrna_suppressed.as_slice());
     }
 
     fn sync_tech_arrays(&mut self) {
+        let a = sync::build_tech_arrays(&self.techs);
         self.tech_count = self.techs.len() as i32;
         self.tech_names = PackedStringArray::new();
         self.tech_descriptions = PackedStringArray::new();
-        self.tech_progress = PackedFloat32Array::new();
-        self.tech_completed = PackedInt32Array::new();
-
-        for t in &self.techs {
-            self.tech_names.push(&GString::from(&t.name));
-            self.tech_descriptions.push(&GString::from(&t.description));
-            self.tech_progress.push(t.progress);
-            self.tech_completed.push(if t.completed { 1 } else { 0 });
+        for name in &a.names {
+            self.tech_names.push(&GString::from(name.as_str()));
         }
+        for desc in &a.descriptions {
+            self.tech_descriptions.push(&GString::from(desc.as_str()));
+        }
+        self.tech_progress = PackedFloat32Array::from(a.progress.as_slice());
+        self.tech_completed = PackedInt32Array::from(a.completed.as_slice());
     }
 
     #[func]

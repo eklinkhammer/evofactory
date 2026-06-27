@@ -5,6 +5,7 @@ mod crafting;
 mod interior;
 mod rules;
 mod tech;
+mod sync;
 mod simulation;
 
 struct EvofactoryExtension;
