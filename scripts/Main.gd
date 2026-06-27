@@ -11,12 +11,17 @@ var press_pos := Vector2.ZERO
 func _ready() -> void:
 	pass  # Chunks generate resources automatically on first tick
 
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_G:
 			simulation.toggle_regulation_panel()
-		if event.keycode == KEY_T:
+			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_T:
 			simulation.toggle_tech_panel()
+			get_viewport().set_input_as_handled()
+
+func _unhandled_input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_TAB:
 			# Cancel active drag when leaving interior
 			if simulation.interior_view and dragging:

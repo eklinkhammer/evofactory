@@ -128,7 +128,7 @@ func _draw() -> void:
 		elif thresh_mode == 1 and thresh_target >= 0 and thresh_target < MRNA_NAMES.size():
 			# Variable threshold — show as "Metric(Target)" with target color
 			var var_col: Color = MRNA_COLORS[thresh_target] if (is_enabled and not is_locked) else dim
-			var var_label := METRIC_SHORT[metric_idx] + "(" + MRNA_NAMES[thresh_target] + ")"
+			var var_label: String = METRIC_SHORT[metric_idx] + "(" + MRNA_NAMES[thresh_target] + ")"
 			_draw_button(font, _panel_x + COL_THRESH, y_base, COL_THRESH_W, var_label, var_col)
 		else:
 			var thresh_str: String
