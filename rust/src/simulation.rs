@@ -13,8 +13,10 @@ use crate::tech::{self, Tech};
 type CellResource = crate::types::Resource;
 
 const CHUNK_SIZE: f32 = 200.0;
-const RESOURCES_PER_CHUNK: i32 = 2;
 const CHUNK_MARGIN: f32 = 200.0; // extra margin beyond visible area
+const DENSITY_THRESHOLD: f32 = 0.38;
+const MAX_RESOURCES_PER_CHUNK: i32 = 8;
+const STARTING_BONUS_RADIUS: f32 = 3.0;
 const DRIFT_SPEED: f32 = 5.0;
 
 const MOVEMENT_ATP_COST: f32 = 0.5;
@@ -401,6 +403,68 @@ impl Simulation {
         self.view_max_wy = max_wy;
     }
 
+    fn noise_hash(gx: i32, gy: i32) -> f32 {
+        let h = (gx as u32)
+            .wrapping_mul(1597334677)
+            .wrapping_add((gy as u32).wrapping_mul(3812015801));
+        let h = h ^ (h >> 16);
+        let h = h.wrapping_mul(2654435769);
+        (h & 0x00FF_FFFF) as f32 / 16777216.0
+    }
+
+    fn smoothstep(t: f32) -> f32 {
+        t * t * (3.0 - 2.0 * t)
+    }
+
+    fn value_noise(cx: f32, cy: f32, period: f32) -> f32 {
+        let sx = cx / period;
+        let sy = cy / period;
+        let ix = sx.floor() as i32;
+        let iy = sy.floor() as i32;
+        let fx = Self::smoothstep(sx - sx.floor());
+        let fy = Self::smoothstep(sy - sy.floor());
+
+        let n00 = Self::noise_hash(ix, iy);
+        let n10 = Self::noise_hash(ix + 1, iy);
+        let n01 = Self::noise_hash(ix, iy + 1);
+        let n11 = Self::noise_hash(ix + 1, iy + 1);
+
+        let nx0 = n00 + (n10 - n00) * fx;
+        let nx1 = n01 + (n11 - n01) * fx;
+        nx0 + (nx1 - nx0) * fy
+    }
+
+    fn chunk_density(cx: i32, cy: i32) -> f32 {
+        let x = cx as f32;
+        let y = cy as f32;
+        let n1 = Self::value_noise(x, y, 6.0);
+        let n2 = Self::value_noise(x + 100.0, y + 100.0, 2.5);
+        (n1 * 0.7 + n2 * 0.3).clamp(0.0, 1.0)
+    }
+
+    fn resource_count_for_chunk(cx: i32, cy: i32) -> i32 {
+        let density = Self::chunk_density(cx, cy);
+
+        let mut count = if density < DENSITY_THRESHOLD {
+            0
+        } else {
+            let t = (density - DENSITY_THRESHOLD) / (1.0 - DENSITY_THRESHOLD);
+            1 + (t * (MAX_RESOURCES_PER_CHUNK - 1) as f32) as i32
+        };
+
+        // Starting area bonus
+        let dist = ((cx * cx + cy * cy) as f32).sqrt();
+        if dist < STARTING_BONUS_RADIUS {
+            let bonus = ((1.0 - dist / STARTING_BONUS_RADIUS) * 4.0) as i32;
+            count += bonus;
+            if count < 3 {
+                count = 3;
+            }
+        }
+
+        count
+    }
+
     fn chunk_seed(cx: i32, cy: i32) -> u64 {
         let a = cx as u64;
         let b = cy as u64;
@@ -450,13 +514,21 @@ impl Simulation {
         // Generate resources for newly active chunks
         let entering: Vec<(i32, i32)> = desired.difference(&self.active_chunks).copied().collect();
         for (cx, cy) in entering {
+            let count = Self::resource_count_for_chunk(cx, cy);
+            if count == 0 {
+                continue;
+            }
             let seed = Self::chunk_seed(cx, cy);
             let mut rng = SmallRng::seed_from_u64(seed);
             let base_x = cx as f32 * CHUNK_SIZE;
             let base_y = cy as f32 * CHUNK_SIZE;
-            for _ in 0..RESOURCES_PER_CHUNK {
-                let x = base_x + rng.gen_range(0.0..CHUNK_SIZE);
-                let y = base_y + rng.gen_range(0.0..CHUNK_SIZE);
+            let focus_x = base_x + rng.gen_range(0.25..0.75) * CHUNK_SIZE;
+            let focus_y = base_y + rng.gen_range(0.25..0.75) * CHUNK_SIZE;
+            for _ in 0..count {
+                let ox = (rng.gen_range(0.0_f32..1.0) + rng.gen_range(0.0_f32..1.0) - 1.0) * 0.25 * CHUNK_SIZE;
+                let oy = (rng.gen_range(0.0_f32..1.0) + rng.gen_range(0.0_f32..1.0) - 1.0) * 0.25 * CHUNK_SIZE;
+                let x = (focus_x + ox).clamp(base_x, base_x + CHUNK_SIZE);
+                let y = (focus_y + oy).clamp(base_y, base_y + CHUNK_SIZE);
                 let resource_type = rng.gen_range(0..2);
                 self.resources.push(CellResource {
                     x,
