@@ -10,6 +10,7 @@ use crate::interior;
 use crate::rules::{self, Rule};
 use crate::sync;
 use crate::tech::{self, Tech};
+use crate::autonomy;
 
 type CellResource = crate::types::Resource;
 
@@ -210,6 +211,29 @@ pub struct Simulation {
     drag_active: bool,
     #[var]
     dragged_particle_type: i32,
+
+    // Autonomy state
+    autonomous_mode: bool,
+    sensor_count: i32,
+    seek_target_internal: autonomy::SeekTarget,
+    random_walk_timer: f32,
+    random_walk_dx: f32,
+    random_walk_dy: f32,
+
+    #[var]
+    autonomous: bool,
+    #[var]
+    autonomy_panel_open: bool,
+    #[var]
+    auto_sensor_count: i32,
+    #[var]
+    auto_sensor_range: f32,
+    #[var]
+    auto_seek_target: i32,
+    #[var]
+    auto_movement_dx: f32,
+    #[var]
+    auto_movement_dy: f32,
 }
 
 #[godot_api]
@@ -320,6 +344,21 @@ impl INode for Simulation {
             dragged_particle_y: 0.0,
             drag_active: false,
             dragged_particle_type: -1,
+
+            autonomous_mode: false,
+            sensor_count: 0,
+            seek_target_internal: autonomy::SeekTarget::Nearest,
+            random_walk_timer: 0.0,
+            random_walk_dx: 0.0,
+            random_walk_dy: 0.0,
+
+            autonomous: false,
+            autonomy_panel_open: false,
+            auto_sensor_count: 0,
+            auto_sensor_range: 0.0,
+            auto_seek_target: 0,
+            auto_movement_dx: 0.0,
+            auto_movement_dy: 0.0,
         }
     }
 }
@@ -581,11 +620,40 @@ impl Simulation {
         self.velocity_x *= damping;
         self.velocity_y *= damping;
 
+        let mut rng = rand::thread_rng();
+
+        // Autonomous movement (chemotaxis or random walk)
+        if self.autonomous_mode {
+            if self.sensor_count > 0 {
+                let (dx, dy) = autonomy::compute_chemotaxis_direction(
+                    self.player_x,
+                    self.player_y,
+                    self.player_radius,
+                    self.sensor_count,
+                    self.seek_target_internal,
+                    &self.resources,
+                );
+                if dx.abs() > 0.001 || dy.abs() > 0.001 {
+                    self.move_player(
+                        dx * autonomy::CHEMOTAXIS_STRENGTH,
+                        dy * autonomy::CHEMOTAXIS_STRENGTH,
+                    );
+                    self.auto_movement_dx = dx;
+                    self.auto_movement_dy = dy;
+                } else {
+                    // No resources in range — fall back to random walk
+                    self.tick_random_walk(dt, &mut rng);
+                }
+            } else {
+                // No sensors — random walk only
+                self.tick_random_walk(dt, &mut rng);
+            }
+        }
+
         // Load/unload chunks around player
         self.update_chunks();
 
         // Drift resources
-        let mut rng = rand::thread_rng();
         for r in &mut self.resources {
             r.x += rng.gen_range(-DRIFT_SPEED..DRIFT_SPEED) * dt;
             r.y += rng.gen_range(-DRIFT_SPEED..DRIFT_SPEED) * dt;
@@ -809,7 +877,16 @@ impl Simulation {
         self.sync_rule_arrays();
 
         tech::tick_techs(&mut self.techs, &mut self.rules);
+
+        // Grant sensor when Chemoreceptor tech completes
+        if self.sensor_count == 0 {
+            if self.techs.iter().any(|t| t.name == "Chemoreceptor" && t.completed) {
+                self.sensor_count = 1;
+            }
+        }
+
         self.sync_tech_arrays();
+        self.sync_autonomy_state();
     }
 
     fn sync_crafting_state(&mut self) {
@@ -869,6 +946,50 @@ impl Simulation {
     #[func]
     fn toggle_regulation_panel(&mut self) {
         self.regulation_panel_open = !self.regulation_panel_open;
+    }
+
+    #[func]
+    fn toggle_autonomous_mode(&mut self) {
+        self.autonomous_mode = !self.autonomous_mode;
+        self.autonomous = self.autonomous_mode;
+        if !self.autonomous_mode {
+            self.auto_movement_dx = 0.0;
+            self.auto_movement_dy = 0.0;
+        }
+    }
+
+    #[func]
+    fn toggle_autonomy_panel(&mut self) {
+        self.autonomy_panel_open = !self.autonomy_panel_open;
+    }
+
+    #[func]
+    fn cycle_seek_target(&mut self) {
+        self.seek_target_internal = self.seek_target_internal.next();
+        self.auto_seek_target = self.seek_target_internal.as_i32();
+    }
+
+    fn tick_random_walk(&mut self, dt: f32, rng: &mut impl Rng) {
+        self.random_walk_timer -= dt;
+        if self.random_walk_timer <= 0.0 {
+            self.random_walk_timer = autonomy::RANDOM_WALK_INTERVAL;
+            let angle: f32 = rng.gen_range(0.0..std::f32::consts::TAU);
+            self.random_walk_dx = angle.cos();
+            self.random_walk_dy = angle.sin();
+        }
+        self.move_player(
+            self.random_walk_dx * autonomy::RANDOM_WALK_STRENGTH,
+            self.random_walk_dy * autonomy::RANDOM_WALK_STRENGTH,
+        );
+        self.auto_movement_dx = self.random_walk_dx;
+        self.auto_movement_dy = self.random_walk_dy;
+    }
+
+    fn sync_autonomy_state(&mut self) {
+        self.autonomous = self.autonomous_mode;
+        self.auto_sensor_count = self.sensor_count;
+        self.auto_sensor_range = autonomy::sensor_range(self.sensor_count);
+        self.auto_seek_target = self.seek_target_internal.as_i32();
     }
 
     fn sync_mrna_progress(&mut self) {
@@ -1281,6 +1402,21 @@ impl Simulation {
             y: MOTOR_ANGLE.sin() * MOTOR_MEMBRANE_RADIUS,
             charge: STARTING_ATP,
         }];
+
+        // Reset autonomy
+        self.autonomous_mode = false;
+        self.sensor_count = 0;
+        self.seek_target_internal = autonomy::SeekTarget::Nearest;
+        self.random_walk_timer = 0.0;
+        self.random_walk_dx = 0.0;
+        self.random_walk_dy = 0.0;
+        self.autonomous = false;
+        self.autonomy_panel_open = false;
+        self.auto_sensor_count = 0;
+        self.auto_sensor_range = 0.0;
+        self.auto_seek_target = 0;
+        self.auto_movement_dx = 0.0;
+        self.auto_movement_dy = 0.0;
 
         self.resources.clear();
         self.active_chunks.clear();

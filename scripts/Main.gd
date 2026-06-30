@@ -19,6 +19,9 @@ func _input(event: InputEvent) -> void:
 		elif event.keycode == KEY_T:
 			simulation.toggle_tech_panel()
 			get_viewport().set_input_as_handled()
+		elif event.keycode == KEY_A:
+			simulation.toggle_autonomy_panel()
+			get_viewport().set_input_as_handled()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -92,29 +95,30 @@ func _process(delta: float) -> void:
 			interior_renderer.queue_redraw()
 		return
 
-	var dx := 0.0
-	var dy := 0.0
+	if not simulation.autonomous:
+		var dx := 0.0
+		var dy := 0.0
 
-	if Input.is_action_pressed("ui_right"):
-		dx += 1.0
-	if Input.is_action_pressed("ui_left"):
-		dx -= 1.0
-	if Input.is_action_pressed("ui_down"):
-		dy += 1.0
-	if Input.is_action_pressed("ui_up"):
-		dy -= 1.0
+		if Input.is_action_pressed("ui_right"):
+			dx += 1.0
+		if Input.is_action_pressed("ui_left"):
+			dx -= 1.0
+		if Input.is_action_pressed("ui_down"):
+			dy += 1.0
+		if Input.is_action_pressed("ui_up"):
+			dy -= 1.0
 
-	# Normalize diagonal movement
-	if dx != 0.0 and dy != 0.0:
-		var inv_sqrt2 := 0.7071
-		dx *= inv_sqrt2
-		dy *= inv_sqrt2
+		# Normalize diagonal movement
+		if dx != 0.0 and dy != 0.0:
+			var inv_sqrt2 := 0.7071
+			dx *= inv_sqrt2
+			dy *= inv_sqrt2
 
-	# Transform screen-space input to world-space for dimetric projection
-	var wx := dx * 0.5 + dy
-	var wy := -dx * 0.5 + dy
+		# Transform screen-space input to world-space for dimetric projection
+		var wx := dx * 0.5 + dy
+		var wy := -dx * 0.5 + dy
 
-	simulation.move_player(wx, wy)
+		simulation.move_player(wx, wy)
 
 	# Hover tracking for interior view
 	if simulation.interior_view:

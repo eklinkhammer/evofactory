@@ -3,6 +3,7 @@ extends CanvasLayer
 var label: Label
 var reg_panel: Node2D
 var tech_panel: Node2D
+var autonomy_panel: Node2D
 
 @onready var simulation: Node = get_node("/root/Main/Simulation")
 
@@ -23,6 +24,12 @@ func _ready() -> void:
 	tech_panel.simulation = simulation
 	add_child(tech_panel)
 
+	var autonomy_script := load("res://scripts/AutonomyPanel.gd")
+	autonomy_panel = Node2D.new()
+	autonomy_panel.set_script(autonomy_script)
+	autonomy_panel.simulation = simulation
+	add_child(autonomy_panel)
+
 func _process(_delta: float) -> void:
 	if simulation:
 		reg_panel.simulation = simulation
@@ -31,6 +38,9 @@ func _process(_delta: float) -> void:
 		tech_panel.simulation = simulation
 		tech_panel.visible = simulation.tech_panel_open
 		tech_panel.queue_redraw()
+		autonomy_panel.simulation = simulation
+		autonomy_panel.visible = simulation.autonomy_panel_open
+		autonomy_panel.queue_redraw()
 		if not simulation.player_alive:
 			label.text = "GAME OVER - Press R to restart"
 			label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
@@ -50,6 +60,8 @@ func _process(_delta: float) -> void:
 					simulation.atp_particle_count,
 					int(simulation.player_glucose),
 				]
+			if simulation.autonomous:
+				label.text += " | AUTO"
 			if simulation.player_energy_ratio < 0.3:
 				label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
 			else:

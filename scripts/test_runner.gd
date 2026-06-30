@@ -60,7 +60,7 @@ func group(name: String):
 func test_initial_state():
 	group("Initial state")
 	tick()
-	assert_eq(sim.tech_count, 4, "tech_count == 4")
+	assert_eq(sim.tech_count, 5, "tech_count == 5")
 	assert_eq(sim.rule_count, 1, "rule_count == 1")
 	assert_gt(sim.tech_names.size(), 0, "tech_names populated")
 	assert_gt(sim.rule_metrics.size(), 0, "rule_metrics populated")
@@ -211,7 +211,7 @@ func test_restart_sync():
 	sim.restart()
 	tick()
 	assert_eq(sim.rule_count, 1, "restart resets rule_count to 1")
-	assert_eq(sim.tech_count, 4, "restart keeps tech_count at 4")
+	assert_eq(sim.tech_count, 5, "restart keeps tech_count at 5")
 	assert_eq(sim.tech_panel_open, false, "restart closes tech panel")
 	assert_eq(sim.regulation_panel_open, false, "restart closes regulation panel")
 	assert_eq(sim.rule_locked[0], 1, "restart re-locks default rule")

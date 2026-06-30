@@ -6,6 +6,7 @@ mod interior;
 mod rules;
 mod tech;
 mod sync;
+mod autonomy;
 mod simulation;
 
 struct EvofactoryExtension;

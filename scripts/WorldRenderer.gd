@@ -103,3 +103,8 @@ func _draw() -> void:
 			var motor_angle: float = atan2(m_ys[mi], m_xs[mi])
 			var motor_screen_pos := player_pos + Vector2(cos(motor_angle), sin(motor_angle)) * radius
 			draw_circle(motor_screen_pos, 4.0, Color(1.0, 0.6, 0.2))
+
+		# Sensor range visualization (when autonomous with sensors)
+		if simulation.autonomous and simulation.auto_sensor_count > 0:
+			var sensor_range: float = simulation.auto_sensor_range
+			draw_arc(player_pos, sensor_range + radius, 0, TAU, 64, Color(0.3, 0.7, 1.0, 0.2), 1.5)
