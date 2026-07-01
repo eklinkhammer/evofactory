@@ -875,8 +875,10 @@ impl Simulation {
         self.nucleotide_particle_count = counts.nucleotide;
 
         // Death check: fully depleted when no motor charge AND no ATP/glucose particles
+        // AND no glucose buffered/processing in zymases
         let total_charge: f32 = self.motors.iter().map(|m| m.charge).sum();
-        if total_charge <= 0.0 && counts.atp == 0 && counts.glucose == 0 {
+        let zymase_has_fuel = self.zymases.iter().any(|z| z.buffer > 0 || z.processing);
+        if total_charge <= 0.0 && counts.atp == 0 && counts.glucose == 0 && !zymase_has_fuel {
             self.player_alive = false;
         }
 
