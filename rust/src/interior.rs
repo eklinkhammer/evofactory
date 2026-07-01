@@ -5,11 +5,13 @@ pub const GLUCOSE_MIN_SEP: f32 = 12.0;
 pub const DIFFUSION_SPEED: f32 = 60.0;
 pub const BASE_MAX_GLUCOSE: i32 = 5;
 pub const BASE_MAX_AMINO: i32 = 5;
+pub const BASE_MAX_NUCLEOTIDE: i32 = 5;
 
 pub struct ParticleCounts {
     pub glucose: i32,
     pub amino_acid: i32,
     pub atp: i32,
+    pub nucleotide: i32,
 }
 
 pub struct AbsorptionEvent {
@@ -95,6 +97,8 @@ pub fn detect_absorptions(
     max_glucose: i32,
     mut cur_amino: i32,
     max_amino: i32,
+    mut cur_nucleotide: i32,
+    max_nucleotide: i32,
     rng: &mut impl Rng,
 ) -> Vec<AbsorptionEvent> {
     let pickup_dist = radius + RESOURCE_RADIUS;
@@ -119,6 +123,12 @@ pub fn detect_absorptions(
                         continue;
                     }
                     cur_amino += 1;
+                }
+                3 => {
+                    if cur_nucleotide >= max_nucleotide {
+                        continue;
+                    }
+                    cur_nucleotide += 1;
                 }
                 _ => continue,
             }
@@ -192,11 +202,13 @@ pub fn count_particles(particles: &[InteriorParticle]) -> ParticleCounts {
     let mut glucose = 0;
     let mut amino_acid = 0;
     let mut atp = 0;
+    let mut nucleotide = 0;
     for p in particles {
         match p.resource_type {
             0 => glucose += 1,
             1 => amino_acid += 1,
             2 => atp += 1,
+            3 => nucleotide += 1,
             _ => {}
         }
     }
@@ -204,6 +216,7 @@ pub fn count_particles(particles: &[InteriorParticle]) -> ParticleCounts {
         glucose,
         amino_acid,
         atp,
+        nucleotide,
     }
 }
 
@@ -334,7 +347,7 @@ mod tests {
         }];
         let mut rng = rand::thread_rng();
         let events =
-            detect_absorptions(0.0, 0.0, 10.0, &resources, 0, 5, 0, 5, &mut rng);
+            detect_absorptions(0.0, 0.0, 10.0, &resources, 0, 5, 0, 5, 0, 5, &mut rng);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].resource_index, 0);
     }
@@ -351,7 +364,7 @@ mod tests {
         }];
         let mut rng = rand::thread_rng();
         let events =
-            detect_absorptions(0.0, 0.0, 10.0, &resources, 0, 5, 0, 5, &mut rng);
+            detect_absorptions(0.0, 0.0, 10.0, &resources, 0, 5, 0, 5, 0, 5, &mut rng);
         assert!(events.is_empty());
     }
 
@@ -367,7 +380,7 @@ mod tests {
         }];
         let mut rng = rand::thread_rng();
         let events =
-            detect_absorptions(0.0, 0.0, 10.0, &resources, 5, 5, 0, 5, &mut rng);
+            detect_absorptions(0.0, 0.0, 10.0, &resources, 5, 5, 0, 5, 0, 5, &mut rng);
         assert!(events.is_empty());
     }
 
@@ -404,10 +417,54 @@ mod tests {
                 y: 0.0,
                 resource_type: 2,
             },
+            InteriorParticle {
+                x: 0.0,
+                y: 0.0,
+                resource_type: 3,
+            },
+            InteriorParticle {
+                x: 0.0,
+                y: 0.0,
+                resource_type: 3,
+            },
         ];
         let counts = count_particles(&particles);
         assert_eq!(counts.glucose, 2);
         assert_eq!(counts.amino_acid, 1);
         assert_eq!(counts.atp, 3);
+        assert_eq!(counts.nucleotide, 2);
+    }
+
+    #[test]
+    fn detect_absorptions_nucleotide_in_range() {
+        let resources = vec![Resource {
+            x: 5.0,
+            y: 0.0,
+            resource_type: 3,
+            amount: 1.0,
+            chunk_x: 0,
+            chunk_y: 0,
+        }];
+        let mut rng = rand::thread_rng();
+        let events =
+            detect_absorptions(0.0, 0.0, 10.0, &resources, 0, 5, 0, 5, 0, 5, &mut rng);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].resource_index, 0);
+    }
+
+    #[test]
+    fn detect_absorptions_nucleotide_at_capacity() {
+        let resources = vec![Resource {
+            x: 5.0,
+            y: 0.0,
+            resource_type: 3,
+            amount: 1.0,
+            chunk_x: 0,
+            chunk_y: 0,
+        }];
+        let mut rng = rand::thread_rng();
+        let events =
+            detect_absorptions(0.0, 0.0, 10.0, &resources, 0, 5, 0, 5, 5, 5, &mut rng);
+        assert!(events.is_empty());
     }
 }

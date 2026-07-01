@@ -75,13 +75,15 @@ func _draw() -> void:
 		var rtypes: PackedInt32Array = simulation.resource_types
 		var glucose_color := Color(0.95, 0.75, 0.2)
 		var amino_color := Color(0.5, 0.3, 0.85)
+		var nucleotide_color := Color(0.9, 0.3, 0.4)
 		var r_radius: float = simulation.resource_radius
 		for i in range(rxs.size()):
 			var pos := world_to_screen(rxs[i], rys[i])
-			if rtypes[i] == 0:
-				draw_circle(pos, r_radius, glucose_color)
-			else:
-				draw_circle(pos, r_radius, amino_color)
+			match rtypes[i]:
+				0: draw_circle(pos, r_radius, glucose_color)
+				1: draw_circle(pos, r_radius, amino_color)
+				3: draw_circle(pos, r_radius, nucleotide_color)
+				_: draw_circle(pos, r_radius, glucose_color)
 
 	# Player cell (exterior LOD only — interior renderer handles zoomed-in view)
 	if simulation and not simulation.interior_view:

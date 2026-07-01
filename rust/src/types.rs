@@ -15,7 +15,7 @@ pub struct InteriorParticle {
 pub struct Resource {
     pub x: f32,
     pub y: f32,
-    pub resource_type: i32, // 0 = glucose, 1 = amino acid
+    pub resource_type: i32, // 0 = glucose, 1 = amino acid, 2 = ATP (interior), 3 = nucleotide
     pub amount: f32,
     pub chunk_x: i32,
     pub chunk_y: i32,

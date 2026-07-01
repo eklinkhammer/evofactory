@@ -78,8 +78,8 @@ func _draw() -> void:
 			draw_circle(motor_pos, 14.0, Color(1.0, 0.7, 0.2, 0.3))
 			draw_arc(motor_pos, 14.0, 0, TAU, 16, Color(1.0, 0.8, 0.3, 0.8), 2.0)
 
-		# Motor drag glow (type 3)
-		if simulation.drag_active and simulation.dragged_particle_type == 3:
+		# Motor drag glow (type 100)
+		if simulation.drag_active and simulation.dragged_particle_type == 100:
 			var drag_pos := Vector2(simulation.dragged_particle_x, simulation.dragged_particle_y)
 			var dx: float = drag_pos.x - motor_pos.x
 			var dy: float = drag_pos.y - motor_pos.y
@@ -183,6 +183,7 @@ func _draw() -> void:
 	var glucose_color := Color(0.95, 0.75, 0.2)
 	var amino_color := Color(0.5, 0.3, 0.85)
 	var atp_color := Color(0.3, 0.9, 1.0)
+	var nucleotide_color := Color(0.9, 0.3, 0.4)
 
 	for i in range(xs.size()):
 		var pos := Vector2(xs[i], ys[i])
@@ -191,6 +192,7 @@ func _draw() -> void:
 			0: col = glucose_color
 			1: col = amino_color
 			2: col = atp_color
+			3: col = nucleotide_color
 			_: col = glucose_color
 		draw_circle(pos, 5.0, col)
 
@@ -206,7 +208,8 @@ func _draw() -> void:
 			0: drag_col = glucose_color
 			1: drag_col = amino_color
 			2: drag_col = atp_color
-			3: drag_col = Color(1.0, 0.6, 0.2)  # motor orange
+			3: drag_col = nucleotide_color
+			100: drag_col = Color(1.0, 0.6, 0.2)  # motor orange
 			_: drag_col = Color.WHITE
 		draw_arc(drag_pos, 9.0, 0, TAU, 16, drag_col, 2.5)
 

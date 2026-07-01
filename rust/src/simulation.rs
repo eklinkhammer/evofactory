@@ -46,6 +46,8 @@ pub struct Simulation {
     player_glucose: f32,
     #[var]
     player_amino_acids: f32,
+    #[var]
+    player_nucleotides: f32,
 
     #[var]
     resource_xs: PackedFloat32Array,
@@ -141,6 +143,8 @@ pub struct Simulation {
     mrna_required: PackedInt32Array,
     #[var]
     amino_acid_particle_count: i32,
+    #[var]
+    nucleotide_particle_count: i32,
 
     mrna_processing: [bool; MRNA_COUNT],
     mrna_timers: [f32; MRNA_COUNT],
@@ -246,6 +250,7 @@ impl INode for Simulation {
             player_radius: MIN_RADIUS,
             player_glucose: 0.0,
             player_amino_acids: 0.0,
+            player_nucleotides: 0.0,
             resource_xs: PackedFloat32Array::new(),
             resource_ys: PackedFloat32Array::new(),
             resource_types: PackedInt32Array::new(),
@@ -304,6 +309,7 @@ impl INode for Simulation {
             mrna_progress: PackedInt32Array::from(&[0i32; MRNA_COUNT][..]),
             mrna_required: PackedInt32Array::from(&crafting::MRNA_REQUIRED[..]),
             amino_acid_particle_count: 0,
+            nucleotide_particle_count: 0,
 
             mrna_processing: [false; MRNA_COUNT],
             mrna_timers: [0.0; MRNA_COUNT],
@@ -569,7 +575,13 @@ impl Simulation {
                 let oy = (rng.gen_range(0.0_f32..1.0) + rng.gen_range(0.0_f32..1.0) - 1.0) * 0.25 * CHUNK_SIZE;
                 let x = (focus_x + ox).clamp(base_x, base_x + CHUNK_SIZE);
                 let y = (focus_y + oy).clamp(base_y, base_y + CHUNK_SIZE);
-                let resource_type = rng.gen_range(0..2);
+                let dist = ((cx * cx + cy * cy) as f32).sqrt();
+                let resource_type = if dist >= STARTING_BONUS_RADIUS {
+                    let t = rng.gen_range(0..3);
+                    if t == 2 { 3 } else { t }
+                } else {
+                    rng.gen_range(0..2)
+                };
                 self.resources.push(CellResource {
                     x,
                     y,
@@ -661,10 +673,10 @@ impl Simulation {
 
         // Check absorption
         let counts = interior::count_particles(&self.interior_particles);
-        let max_glucose = interior::BASE_MAX_GLUCOSE
-            + (CAPACITY_SCALE * (self.expansion_count as f32).sqrt()) as i32;
-        let max_amino = interior::BASE_MAX_AMINO
-            + (CAPACITY_SCALE * (self.expansion_count as f32).sqrt()) as i32;
+        let expansion_sqrt = (self.expansion_count as f32).sqrt();
+        let max_glucose = interior::BASE_MAX_GLUCOSE + (CAPACITY_SCALE * expansion_sqrt) as i32;
+        let max_amino = interior::BASE_MAX_AMINO + (CAPACITY_SCALE * expansion_sqrt) as i32;
+        let max_nucleotide = interior::BASE_MAX_NUCLEOTIDE + (CAPACITY_SCALE * expansion_sqrt) as i32;
 
         let absorption_events = interior::detect_absorptions(
             self.player_x,
@@ -675,6 +687,8 @@ impl Simulation {
             max_glucose,
             counts.amino_acid,
             max_amino,
+            counts.nucleotide,
+            max_nucleotide,
             &mut rng,
         );
 
@@ -682,6 +696,7 @@ impl Simulation {
             match event.resource_type {
                 0 => self.player_glucose += event.amount,
                 1 => self.player_amino_acids += event.amount,
+                3 => self.player_nucleotides += event.amount,
                 _ => {}
             }
             interior::apply_absorption(&mut self.interior_particles, event, &mut rng);
@@ -857,6 +872,7 @@ impl Simulation {
         self.atp_particle_count = counts.atp;
         self.glucose_particle_count = counts.glucose;
         self.amino_acid_particle_count = counts.amino_acid;
+        self.nucleotide_particle_count = counts.nucleotide;
 
         // Death check: fully depleted when no motor charge AND no ATP/glucose particles
         let total_charge: f32 = self.motors.iter().map(|m| m.charge).sum();
@@ -1062,7 +1078,7 @@ impl Simulation {
                 self.dragged_particle_x = self.motors[mi].x;
                 self.dragged_particle_y = self.motors[mi].y;
                 self.drag_active = true;
-                self.dragged_particle_type = 3;
+                self.dragged_particle_type = 100;
                 true
             }
             Some(PickTarget::Particle(idx)) => {
@@ -1078,7 +1094,7 @@ impl Simulation {
                 self.dragged_particle_x = self.zymases[ei].x;
                 self.dragged_particle_y = self.zymases[ei].y;
                 self.drag_active = true;
-                self.dragged_particle_type = 4;
+                self.dragged_particle_type = 101;
                 true
             }
             Some(PickTarget::Mrna(i)) => {
@@ -1086,7 +1102,7 @@ impl Simulation {
                 self.dragged_particle_x = self.mrna_xs[i as usize];
                 self.dragged_particle_y = self.mrna_ys[i as usize];
                 self.drag_active = true;
-                self.dragged_particle_type = 5;
+                self.dragged_particle_type = 102;
                 true
             }
             None => false,
@@ -1360,6 +1376,7 @@ impl Simulation {
         self.player_alive = true;
         self.player_glucose = 0.0;
         self.player_amino_acids = 0.0;
+        self.player_nucleotides = 0.0;
         self.velocity_x = 0.0;
         self.velocity_y = 0.0;
         self.player_energy_ratio = STARTING_ATP / MAX_ATP;
@@ -1367,6 +1384,7 @@ impl Simulation {
         self.atp_particle_count = 0;
         self.glucose_particle_count = 0;
         self.amino_acid_particle_count = 0;
+        self.nucleotide_particle_count = 0;
         self.mrna_progress_internal = [0; MRNA_COUNT];
         self.mrna_progress = PackedInt32Array::from(&[0i32; MRNA_COUNT][..]);
         self.zymases = vec![Zymase { x: 0.0, y: 0.0, buffer: 0, processing: false, timer: 0.0 }];
