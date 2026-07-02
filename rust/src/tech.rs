@@ -68,15 +68,17 @@ pub fn default_techs() -> Vec<Tech> {
     ]
 }
 
-pub fn tick_techs(techs: &mut [Tech], rules: &mut [Rule], ctx: &TechContext) {
+pub fn tick_techs(techs: &mut [Tech], rules: &mut [Rule], ctx: &TechContext) -> bool {
     // Collect completion states and progress for TechCompleted checks
     let completed: Vec<bool> = techs.iter().map(|t| t.completed).collect();
     let progress: Vec<f32> = techs.iter().map(|t| t.progress).collect();
+    let mut any_changed = false;
 
     for tech in techs.iter_mut() {
         if tech.completed {
             continue;
         }
+        let old_progress = tech.progress;
         match tech.trigger {
             TechTrigger::RuleFiring { rule_index } => {
                 if rule_index >= rules.len() {
@@ -129,7 +131,11 @@ pub fn tick_techs(techs: &mut [Tech], rules: &mut [Rule], ctx: &TechContext) {
                 // Placeholder tech — never progresses
             }
         }
+        if tech.progress != old_progress || tech.completed {
+            any_changed = true;
+        }
     }
+    any_changed
 }
 
 #[cfg(test)]
@@ -312,6 +318,26 @@ mod tests {
         tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 4 });
         assert!(!techs[5].completed);
         assert!((techs[5].progress - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn tick_techs_returns_true_when_progress_changes() {
+        let mut techs = default_techs();
+        let mut rule_set = rules::default_rules();
+        // 1 motor at r=15: surfdens > 0, progress should increase
+        rules::evaluate_suppressions(&mut rule_set, 1, 1, 0, 15.0);
+        let changed = tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
+        assert!(changed, "tick_techs should return true when progress changes");
+    }
+
+    #[test]
+    fn tick_techs_returns_false_when_nothing_changes() {
+        let mut techs = default_techs();
+        let mut rule_set = rules::default_rules();
+        // 0 motors: no progress on any tech
+        rules::evaluate_suppressions(&mut rule_set, 0, 1, 0, 15.0);
+        let changed = tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
+        assert!(!changed, "tick_techs should return false when nothing changes");
     }
 
     #[test]

@@ -7,9 +7,14 @@ extends Node2D
 
 var dragging := false
 var press_pos := Vector2.ZERO
+var tutorial_overlay: CanvasLayer
 
 func _ready() -> void:
-	pass  # Chunks generate resources automatically on first tick
+	# A2: Add tutorial overlay
+	var tutorial_script := load("res://scripts/TutorialOverlay.gd")
+	tutorial_overlay = CanvasLayer.new()
+	tutorial_overlay.set_script(tutorial_script)
+	add_child(tutorial_overlay)
 
 func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -87,6 +92,9 @@ func _process(delta: float) -> void:
 	if not simulation.player_alive:
 		if Input.is_key_pressed(KEY_R):
 			simulation.restart()
+			interior_renderer.reset_tutorial_state()
+			tutorial_overlay.current_step = 0
+			tutorial_overlay.step_timer = 0.0
 			camera.exit_interior()
 			dragging = false
 			interior_renderer.tooltip_target = -1

@@ -6,6 +6,7 @@ pub const MRNA_COUNT: usize = 3;
 pub const CAPACITY_SCALE: f32 = 2.0;
 pub const MIN_RADIUS: f32 = 15.0;
 
+#[derive(Clone)]
 pub struct InteriorParticle {
     pub x: f32,
     pub y: f32,

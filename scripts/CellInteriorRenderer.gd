@@ -4,13 +4,25 @@ extends Node2D
 
 var hovered_index: int = -1
 var tooltip_target: int = -1  # -1=none, 0=zymase, 1/2/3=mRNA indices
+var interior_entry_count: int = 0
+var was_interior: bool = false
+
+func reset_tutorial_state() -> void:
+	interior_entry_count = 0
+	was_interior = false
 
 func _ready() -> void:
 	z_index = 1
 
 func _draw() -> void:
 	if not simulation or not simulation.interior_view:
+		was_interior = false
 		return
+
+	# Track interior entries for A3 label enhancement
+	if not was_interior:
+		interior_entry_count += 1
+		was_interior = true
 
 	var radius: float = simulation.interior_radius
 
@@ -31,7 +43,14 @@ func _draw() -> void:
 	var zymase_r: float = simulation.zymase_interior_radius
 
 	var font := ThemeDB.fallback_font
-	var font_size := 10
+	# A3: Larger labels on first 3 interior entries
+	var enhanced_labels: bool = interior_entry_count <= 3
+	var font_size := 14 if enhanced_labels else 10
+	var label_alpha_base: float = 1.0 if enhanced_labels else 0.6
+
+	var zymase_label_width: float = 0.0
+	if enhanced_labels:
+		zymase_label_width = font.get_string_size("Zymase", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
 
 	for zi in range(z_xs.size()):
 		var zymase_pos := Vector2(z_xs[zi], z_ys[zi])
@@ -46,7 +65,10 @@ func _draw() -> void:
 		draw_arc(zymase_pos, zymase_r, 0, TAU, 6, Color(0.4, 0.9, 0.4), 2.0)
 
 		# Zymase label
-		draw_string(font, zymase_pos + Vector2(-15, zymase_r + 14), "Zymase", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.4, 0.9, 0.4, 0.6))
+		var z_label_pos := zymase_pos + Vector2(-15, zymase_r + 14)
+		if enhanced_labels:
+			draw_rect(Rect2(z_label_pos + Vector2(-3, -font_size + 2), Vector2(zymase_label_width + 6, font_size + 4)), Color(0.0, 0.0, 0.0, 0.5), true, -1.0, true)
+		draw_string(font, z_label_pos, "Zymase", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.4, 0.9, 0.4, label_alpha_base))
 
 		# Zymase processing progress arc
 		if zi < z_proc.size() and z_proc[zi] == 1:
@@ -161,8 +183,12 @@ func _draw() -> void:
 				draw_arc(center, 14.0, 0, TAU, 24, col, 2.5)
 
 		# mRNA label (dimmed if suppressed)
-		var label_alpha: float = 0.3 if is_suppressed else 0.6
-		draw_string(font, center + Vector2(-15, 22), mrna_names[i], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(col.r, col.g, col.b, label_alpha))
+		var label_alpha: float = 0.3 if is_suppressed else label_alpha_base
+		var mrna_label_pos := center + Vector2(-15, 22)
+		if enhanced_labels and not is_suppressed:
+			var lw: float = font.get_string_size(mrna_names[i], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+			draw_rect(Rect2(mrna_label_pos + Vector2(-3, -font_size + 2), Vector2(lw + 6, font_size + 4)), Color(0.0, 0.0, 0.0, 0.5), true, -1.0, true)
+		draw_string(font, mrna_label_pos, mrna_names[i], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(col.r, col.g, col.b, label_alpha))
 
 		# Suppression indicator: red X near the strand
 		if is_suppressed:
@@ -205,7 +231,11 @@ func _draw() -> void:
 
 			# Label
 			var label_text := "Nuc:" + nuc_names[tt]
-			draw_string(font, center + Vector2(-20, 26), label_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(col.r, col.g, col.b, 0.6))
+			var nuc_label_pos := center + Vector2(-20, 26)
+			if enhanced_labels:
+				var lw: float = font.get_string_size(label_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
+				draw_rect(Rect2(nuc_label_pos + Vector2(-3, -font_size + 2), Vector2(lw + 6, font_size + 4)), Color(0.0, 0.0, 0.0, 0.5), true, -1.0, true)
+			draw_string(font, nuc_label_pos, label_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(col.r, col.g, col.b, label_alpha_base))
 
 			# Progress pips
 			if ni < nuc_prog.size() and ni < nuc_req.size():

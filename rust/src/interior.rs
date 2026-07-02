@@ -46,29 +46,112 @@ pub fn diffuse(
     }
 }
 
-/// O(n²) pairwise separation for all particles.
+/// Resolve overlap between two particles.
+fn separate_pair(particles: &mut [InteriorParticle], i: usize, j: usize, rng: &mut impl Rng) {
+    let dx = particles[j].x - particles[i].x;
+    let dy = particles[j].y - particles[i].y;
+    let d = (dx * dx + dy * dy).sqrt();
+    if d < GLUCOSE_MIN_SEP && d > 0.001 {
+        let overlap = (GLUCOSE_MIN_SEP - d) * 0.5;
+        let nx = dx / d;
+        let ny = dy / d;
+        particles[i].x -= nx * overlap;
+        particles[i].y -= ny * overlap;
+        particles[j].x += nx * overlap;
+        particles[j].y += ny * overlap;
+    } else if d <= 0.001 {
+        let a = rng.gen_range(0.0..std::f32::consts::TAU);
+        let half = GLUCOSE_MIN_SEP * 0.5;
+        particles[i].x -= a.cos() * half;
+        particles[i].y -= a.sin() * half;
+        particles[j].x += a.cos() * half;
+        particles[j].y += a.sin() * half;
+    }
+}
+
+/// Spatial-hash accelerated separation: O(n) average for uniformly distributed particles.
 pub fn separate(particles: &mut [InteriorParticle], rng: &mut impl Rng) {
     let n = particles.len();
+    if n < 2 {
+        return;
+    }
+
+    let cell_size = GLUCOSE_MIN_SEP;
+    let grid_offset = INTERIOR_RADIUS + cell_size;
+    let grid_width = ((2.0 * grid_offset) / cell_size).ceil() as usize + 1;
+    let total_cells = grid_width * grid_width;
+
+    // Flat allocation: count particles per cell, build prefix-sum offsets,
+    // then place indices into a flat buffer. Replaces total_cells inner Vecs.
+    let mut counts = vec![0usize; total_cells];
     for i in 0..n {
-        for j in (i + 1)..n {
-            let dx = particles[j].x - particles[i].x;
-            let dy = particles[j].y - particles[i].y;
-            let d = (dx * dx + dy * dy).sqrt();
-            if d < GLUCOSE_MIN_SEP && d > 0.001 {
-                let overlap = (GLUCOSE_MIN_SEP - d) * 0.5;
-                let nx = dx / d;
-                let ny = dy / d;
-                particles[i].x -= nx * overlap;
-                particles[i].y -= ny * overlap;
-                particles[j].x += nx * overlap;
-                particles[j].y += ny * overlap;
-            } else if d <= 0.001 {
-                let a = rng.gen_range(0.0..std::f32::consts::TAU);
-                let half = GLUCOSE_MIN_SEP * 0.5;
-                particles[i].x -= a.cos() * half;
-                particles[i].y -= a.sin() * half;
-                particles[j].x += a.cos() * half;
-                particles[j].y += a.sin() * half;
+        let gx = ((particles[i].x + grid_offset) / cell_size) as usize;
+        let gy = ((particles[i].y + grid_offset) / cell_size) as usize;
+        let gx = gx.min(grid_width - 1);
+        let gy = gy.min(grid_width - 1);
+        counts[gy * grid_width + gx] += 1;
+    }
+
+    // Build prefix-sum offsets
+    let mut offsets = vec![0usize; total_cells + 1];
+    for c in 0..total_cells {
+        offsets[c + 1] = offsets[c] + counts[c];
+    }
+
+    // Place particle indices into flat buffer using offsets as write cursors
+    let mut flat = vec![0usize; n];
+    let mut write = offsets[..total_cells].to_vec();
+    for i in 0..n {
+        let gx = ((particles[i].x + grid_offset) / cell_size) as usize;
+        let gy = ((particles[i].y + grid_offset) / cell_size) as usize;
+        let gx = gx.min(grid_width - 1);
+        let gy = gy.min(grid_width - 1);
+        let cell = gy * grid_width + gx;
+        flat[write[cell]] = i;
+        write[cell] += 1;
+    }
+
+    // Half-neighborhood: right, below-left, below, below-right
+    const NEIGHBORS: [(i32, i32); 4] = [(1, 0), (-1, 1), (0, 1), (1, 1)];
+
+    for gy in 0..grid_width {
+        for gx in 0..grid_width {
+            let cell_idx = gy * grid_width + gx;
+            let cell_start = offsets[cell_idx];
+            let cell_len = counts[cell_idx];
+            if cell_len == 0 {
+                continue;
+            }
+
+            // Pairs within the same cell
+            for a in 0..cell_len {
+                for b in (a + 1)..cell_len {
+                    let i = flat[cell_start + a];
+                    let j = flat[cell_start + b];
+                    separate_pair(particles, i, j, rng);
+                }
+            }
+
+            // Pairs with forward neighbors
+            for &(dx, dy) in &NEIGHBORS {
+                let nx = gx as i32 + dx;
+                let ny = gy as i32 + dy;
+                if nx < 0 || ny < 0 || nx >= grid_width as i32 || ny >= grid_width as i32 {
+                    continue;
+                }
+                let neighbor_idx = ny as usize * grid_width + nx as usize;
+                let neighbor_start = offsets[neighbor_idx];
+                let neighbor_len = counts[neighbor_idx];
+                if neighbor_len == 0 {
+                    continue;
+                }
+                for a in 0..cell_len {
+                    for b in 0..neighbor_len {
+                        let i = flat[cell_start + a];
+                        let j = flat[neighbor_start + b];
+                        separate_pair(particles, i, j, rng);
+                    }
+                }
             }
         }
     }
@@ -450,6 +533,56 @@ mod tests {
             detect_absorptions(0.0, 0.0, 10.0, &resources, 0, 5, 0, 5, 0, 5, &mut rng);
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].resource_index, 0);
+    }
+
+    #[test]
+    fn separate_across_cell_boundary() {
+        // Place particles straddling a cell boundary (cell_size = GLUCOSE_MIN_SEP = 12)
+        // One at (11.9, 0) and one at (12.1, 0) — different cells, distance = 0.2
+        let mut particles = vec![
+            InteriorParticle { x: 11.9, y: 0.0, resource_type: 0 },
+            InteriorParticle { x: 12.1, y: 0.0, resource_type: 0 },
+        ];
+        let mut rng = rand::thread_rng();
+        separate(&mut particles, &mut rng);
+        let dx = particles[1].x - particles[0].x;
+        let dy = particles[1].y - particles[0].y;
+        let d = (dx * dx + dy * dy).sqrt();
+        assert!((d - GLUCOSE_MIN_SEP).abs() < 0.01, "Cross-cell separation failed: d={}", d);
+    }
+
+    #[test]
+    fn separate_distant_particles_unchanged() {
+        let mut particles = vec![
+            InteriorParticle { x: 0.0, y: 0.0, resource_type: 0 },
+            InteriorParticle { x: 50.0, y: 50.0, resource_type: 0 },
+        ];
+        let mut rng = rand::thread_rng();
+        let orig = particles.clone();
+        separate(&mut particles, &mut rng);
+        assert_eq!(particles[0].x, orig[0].x);
+        assert_eq!(particles[0].y, orig[0].y);
+        assert_eq!(particles[1].x, orig[1].x);
+        assert_eq!(particles[1].y, orig[1].y);
+    }
+
+    #[test]
+    fn separate_single_particle_noop() {
+        let mut particles = vec![
+            InteriorParticle { x: 10.0, y: 10.0, resource_type: 0 },
+        ];
+        let mut rng = rand::thread_rng();
+        separate(&mut particles, &mut rng);
+        assert_eq!(particles[0].x, 10.0);
+        assert_eq!(particles[0].y, 10.0);
+    }
+
+    #[test]
+    fn separate_empty_noop() {
+        let mut particles: Vec<InteriorParticle> = vec![];
+        let mut rng = rand::thread_rng();
+        separate(&mut particles, &mut rng);
+        assert!(particles.is_empty());
     }
 
     #[test]

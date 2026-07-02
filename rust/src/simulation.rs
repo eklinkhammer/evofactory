@@ -237,6 +237,12 @@ pub struct Simulation {
     #[var]
     dragged_particle_type: i32,
 
+    // Dirty flags for sync optimization
+    motors_dirty: bool,
+    zymases_dirty: bool,
+    techs_dirty: bool,
+    nuclei_dirty: bool,
+
     // Autonomy state
     autonomous_mode: bool,
     sensor_count: i32,
@@ -384,6 +390,11 @@ impl INode for Simulation {
             drag_active: false,
             dragged_particle_type: -1,
 
+            motors_dirty: true,
+            zymases_dirty: true,
+            techs_dirty: true,
+            nuclei_dirty: true,
+
             autonomous_mode: false,
             sensor_count: 0,
             seek_target_internal: autonomy::SeekTarget::Nearest,
@@ -496,6 +507,7 @@ impl Simulation {
         if idx < self.nuclei.len() && !self.nuclei[idx].processing {
             self.nuclei[idx].target_type = (self.nuclei[idx].target_type + 1) % 3;
             self.nuclei[idx].progress = 0;
+            self.nuclei_dirty = true;
         }
     }
 
@@ -691,57 +703,68 @@ impl Simulation {
         if !self.player_alive {
             return;
         }
-
         let dt = delta as f32;
-        let damping = 0.9_f32.powf(dt * 60.0);
-
-        // Update player position (no bounds — infinite world)
-        self.player_x += self.velocity_x * dt;
-        self.player_y += self.velocity_y * dt;
-
-        self.velocity_x *= damping;
-        self.velocity_y *= damping;
-
         let mut rng = rand::thread_rng();
 
-        // Autonomous movement (chemotaxis or random walk)
-        if self.autonomous_mode {
-            if self.sensor_count > 0 {
-                let (dx, dy) = autonomy::compute_chemotaxis_direction(
-                    self.player_x,
-                    self.player_y,
-                    self.player_radius,
-                    self.sensor_count,
-                    self.seek_target_internal,
-                    &self.resources,
-                );
-                if dx.abs() > 0.001 || dy.abs() > 0.001 {
-                    self.move_player(
-                        dx * autonomy::CHEMOTAXIS_STRENGTH,
-                        dy * autonomy::CHEMOTAXIS_STRENGTH,
-                    );
-                    self.auto_movement_dx = dx;
-                    self.auto_movement_dy = dy;
-                } else {
-                    // No resources in range — fall back to random walk
-                    self.tick_random_walk(dt, &mut rng);
-                }
-            } else {
-                // No sensors — random walk only
-                self.tick_random_walk(dt, &mut rng);
-            }
-        }
+        self.tick_movement(dt);
+        self.tick_autonomous_movement(dt, &mut rng);
+        self.tick_world(dt, &mut rng);
+        let max_nucleotide = self.tick_absorption(&mut rng);
+        self.tick_metabolism(dt);
+        self.tick_interior_physics(dt, &mut rng);
+        self.tick_regulation();
+        self.tick_crafting(dt, &mut rng);
+        self.tick_status();
+        self.tick_progression(max_nucleotide);
+        self.tick_sync();
+    }
 
-        // Load/unload chunks around player
+    fn tick_movement(&mut self, dt: f32) {
+        let damping = 0.9_f32.powf(dt * 60.0);
+        self.player_x += self.velocity_x * dt;
+        self.player_y += self.velocity_y * dt;
+        self.velocity_x *= damping;
+        self.velocity_y *= damping;
+    }
+
+    fn tick_autonomous_movement(&mut self, dt: f32, rng: &mut impl Rng) {
+        if !self.autonomous_mode {
+            return;
+        }
+        if self.sensor_count > 0 {
+            let (dx, dy) = autonomy::compute_chemotaxis_direction(
+                self.player_x,
+                self.player_y,
+                self.player_radius,
+                self.sensor_count,
+                self.seek_target_internal,
+                &self.resources,
+            );
+            if dx.abs() > 0.001 || dy.abs() > 0.001 {
+                self.move_player(
+                    dx * autonomy::CHEMOTAXIS_STRENGTH,
+                    dy * autonomy::CHEMOTAXIS_STRENGTH,
+                );
+                self.auto_movement_dx = dx;
+                self.auto_movement_dy = dy;
+            } else {
+                self.tick_random_walk(dt, rng);
+            }
+        } else {
+            self.tick_random_walk(dt, rng);
+        }
+    }
+
+    fn tick_world(&mut self, dt: f32, rng: &mut impl Rng) {
         self.update_chunks();
 
-        // Drift resources
         for r in &mut self.resources {
             r.x += rng.gen_range(-DRIFT_SPEED..DRIFT_SPEED) * dt;
             r.y += rng.gen_range(-DRIFT_SPEED..DRIFT_SPEED) * dt;
         }
+    }
 
-        // Check absorption
+    fn tick_absorption(&mut self, rng: &mut impl Rng) -> i32 {
         let counts = interior::count_particles(&self.interior_particles);
         let expansion_sqrt = (self.expansion_count as f32).sqrt();
         let max_glucose = interior::BASE_MAX_GLUCOSE + (CAPACITY_SCALE * expansion_sqrt) as i32;
@@ -759,34 +782,44 @@ impl Simulation {
             max_amino,
             counts.nucleotide,
             max_nucleotide,
-            &mut rng,
+            rng,
         );
 
-        for event in &absorption_events {
-            match event.resource_type {
-                0 => self.player_glucose += event.amount,
-                1 => self.player_amino_acids += event.amount,
-                3 => self.player_nucleotides += event.amount,
-                _ => {}
+        if !absorption_events.is_empty() {
+            for event in &absorption_events {
+                match event.resource_type {
+                    0 => self.player_glucose += event.amount,
+                    1 => self.player_amino_acids += event.amount,
+                    3 => self.player_nucleotides += event.amount,
+                    _ => {}
+                }
+                interior::apply_absorption(&mut self.interior_particles, event, rng);
             }
-            interior::apply_absorption(&mut self.interior_particles, event, &mut rng);
+
+            let mut remove_indices: Vec<usize> =
+                absorption_events.iter().map(|e| e.resource_index).collect();
+            remove_indices.sort_unstable_by(|a, b| b.cmp(a));
+            for i in remove_indices {
+                self.resources.swap_remove(i);
+            }
         }
 
-        // Remove absorbed resources (sort descending for safe swap_remove)
-        let mut remove_indices: Vec<usize> = absorption_events.iter().map(|e| e.resource_index).collect();
-        remove_indices.sort_unstable_by(|a, b| b.cmp(a));
-        for i in remove_indices {
-            self.resources.swap_remove(i);
-        }
+        max_nucleotide
+    }
 
-        // Movement-based metabolism (distribute across all motors)
-        let speed = (self.velocity_x * self.velocity_x + self.velocity_y * self.velocity_y).sqrt();
+    fn tick_metabolism(&mut self, dt: f32) {
+        let speed =
+            (self.velocity_x * self.velocity_x + self.velocity_y * self.velocity_y).sqrt();
         if speed > VELOCITY_THRESHOLD {
             let total_charge: f32 = self.motors.iter().map(|m| m.charge).sum();
             if total_charge > 0.0 {
-                let cost = MOVEMENT_ATP_COST + (self.player_radius - MIN_RADIUS) * SIZE_METABOLISM_FACTOR;
+                let cost =
+                    MOVEMENT_ATP_COST + (self.player_radius - MIN_RADIUS) * SIZE_METABOLISM_FACTOR;
                 let cost_per_frame = cost * dt;
-                let charged_motors: Vec<usize> = self.motors.iter().enumerate()
+                let charged_motors: Vec<usize> = self
+                    .motors
+                    .iter()
+                    .enumerate()
                     .filter(|(_, m)| m.charge > 0.0)
                     .map(|(i, _)| i)
                     .collect();
@@ -795,13 +828,16 @@ impl Simulation {
                     for &i in &charged_motors {
                         self.motors[i].charge = (self.motors[i].charge - cost_each).max(0.0);
                     }
+                    self.motors_dirty = true;
                 }
             } else {
                 self.velocity_x *= 0.95_f32.powf(dt * 60.0);
                 self.velocity_y *= 0.95_f32.powf(dt * 60.0);
             }
         }
+    }
 
+    fn tick_interior_physics(&mut self, dt: f32, rng: &mut impl Rng) {
         // Sync dragged particle position from GDScript each frame
         if let Some(idx) = self.dragged_particle_index {
             if idx < self.interior_particles.len() {
@@ -809,24 +845,19 @@ impl Simulation {
                 self.interior_particles[idx].y = self.dragged_particle_y;
             }
         }
-
-        // Sync dragged zymase position
         if let Some(ei) = self.dragged_zymase_index {
             if ei < self.zymases.len() {
                 self.zymases[ei].x = self.dragged_particle_x;
                 self.zymases[ei].y = self.dragged_particle_y;
+                self.zymases_dirty = true;
             }
         }
-
-        // Sync dragged mRNA position
         if let Some(mi) = self.dragged_mrna_index {
             if mi < MRNA_COUNT {
                 self.mrna_xs[mi as usize] = self.dragged_particle_x;
                 self.mrna_ys[mi as usize] = self.dragged_particle_y;
             }
         }
-
-        // Sync dragged motor position — constrain to membrane edge
         if let Some(mi) = self.dragged_motor_index {
             if mi < self.motors.len() {
                 let angle = self.dragged_particle_y.atan2(self.dragged_particle_x);
@@ -834,19 +865,16 @@ impl Simulation {
                 self.motors[mi].y = angle.sin() * MOTOR_MEMBRANE_RADIUS;
                 self.dragged_particle_x = self.motors[mi].x;
                 self.dragged_particle_y = self.motors[mi].y;
+                self.motors_dirty = true;
             }
         }
 
-        // Brownian diffusion for interior particles
-        interior::diffuse(&mut self.interior_particles, self.dragged_particle_index, dt, &mut rng);
-
-        // Pairwise separation for all interior particles
-        interior::separate(&mut self.interior_particles, &mut rng);
-
-        // Re-clamp particles to membrane after separation
+        interior::diffuse(&mut self.interior_particles, self.dragged_particle_index, dt, rng);
+        interior::separate(&mut self.interior_particles, rng);
         interior::clamp_to_membrane(&mut self.interior_particles);
+    }
 
-        // Evaluate gene regulation rules
+    fn tick_regulation(&mut self) {
         self.current_suppressions = rules::evaluate_suppressions(
             &mut self.rules,
             self.motors.len(),
@@ -854,11 +882,14 @@ impl Simulation {
             self.expansion_count,
             self.player_radius,
         );
+    }
 
-        // Auto-consumption: particles near their target organelles are consumed
+    fn tick_crafting(&mut self, dt: f32, rng: &mut impl Rng) {
+        let mrna_xs = self.mrna_xs_slice();
+        let mrna_ys = self.mrna_ys_slice();
+
+        // Auto-consumption
         {
-            let mrna_xs = self.mrna_xs_slice();
-            let mrna_ys = self.mrna_ys_slice();
             let actually_consumed = crafting::auto_consume(
                 &self.interior_particles,
                 &mut self.zymases,
@@ -874,33 +905,36 @@ impl Simulation {
                 &mut self.nuclei,
             );
 
-            // Remove consumed particles in reverse order (swap_remove safe)
-            for &i in actually_consumed.iter().rev() {
-                self.interior_particles.swap_remove(i);
-                // Fix up dragged_particle_index if it shifted
-                if let Some(ref mut di) = self.dragged_particle_index {
-                    if *di == i {
-                        self.dragged_particle_index = None;
-                    } else if *di == self.interior_particles.len() {
-                        // This particle was swapped into position i
-                        *di = i;
+            if !actually_consumed.is_empty() {
+                for &i in actually_consumed.iter().rev() {
+                    self.interior_particles.swap_remove(i);
+                    if let Some(ref mut di) = self.dragged_particle_index {
+                        if *di == i {
+                            self.dragged_particle_index = None;
+                        } else if *di == self.interior_particles.len() {
+                            *di = i;
+                        }
                     }
                 }
+                self.zymases_dirty = true;
+                self.motors_dirty = true;
+                self.nuclei_dirty = true;
             }
         }
 
         // Zymase timed crafting
-        let zymase_outputs = crafting::tick_zymases(&mut self.zymases, dt, &mut rng);
-        for output in zymase_outputs {
-            if let CraftOutput::SpawnParticle { x, y, resource_type } = output {
-                self.interior_particles.push(InteriorParticle { x, y, resource_type });
+        let zymase_outputs = crafting::tick_zymases(&mut self.zymases, dt, rng);
+        if !zymase_outputs.is_empty() {
+            for output in zymase_outputs {
+                if let CraftOutput::SpawnParticle { x, y, resource_type } = output {
+                    self.interior_particles.push(InteriorParticle { x, y, resource_type });
+                }
             }
+            self.zymases_dirty = true;
         }
 
         // mRNA timed crafting
         {
-            let mrna_xs = self.mrna_xs_slice();
-            let mrna_ys = self.mrna_ys_slice();
             let mrna_outputs = crafting::tick_mrna(
                 &mut self.mrna_processing,
                 &mut self.mrna_timers,
@@ -911,71 +945,83 @@ impl Simulation {
                 dt,
             );
             for output in mrna_outputs {
-                match output {
-                    CraftOutput::SpawnZymase { x, y } => {
-                        self.zymases.push(Zymase {
-                            x,
-                            y,
-                            buffer: 0,
-                            processing: false,
-                            timer: 0.0,
-                        });
-                    }
-                    CraftOutput::SpawnMotor { angle } => {
-                        self.motors.push(Motor {
-                            x: angle.cos() * MOTOR_MEMBRANE_RADIUS,
-                            y: angle.sin() * MOTOR_MEMBRANE_RADIUS,
-                            charge: 0.0,
-                        });
-                    }
-                    CraftOutput::GrowCell => {
-                        self.expansion_count += 1;
-                        self.player_radius =
-                            MIN_RADIUS + crafting::GROWTH_SCALE * (self.expansion_count as f32).sqrt();
-                    }
-                    _ => {}
-                }
+                self.apply_craft_output(output);
             }
         }
 
-        // Count particles for HUD
+        // Nucleus timed crafting
+        let nucleus_outputs = crafting::tick_nuclei(&mut self.nuclei, dt);
+        if !nucleus_outputs.is_empty() {
+            self.nuclei_dirty = true;
+            for output in nucleus_outputs {
+                self.apply_craft_output(output);
+            }
+        }
+    }
+
+    fn apply_craft_output(&mut self, output: CraftOutput) {
+        match output {
+            CraftOutput::SpawnZymase { x, y } => {
+                self.zymases.push(Zymase {
+                    x,
+                    y,
+                    buffer: 0,
+                    processing: false,
+                    timer: 0.0,
+                });
+                self.zymases_dirty = true;
+            }
+            CraftOutput::SpawnMotor { angle } => {
+                self.motors.push(Motor {
+                    x: angle.cos() * MOTOR_MEMBRANE_RADIUS,
+                    y: angle.sin() * MOTOR_MEMBRANE_RADIUS,
+                    charge: 0.0,
+                });
+                self.motors_dirty = true;
+            }
+            CraftOutput::GrowCell => {
+                self.expansion_count += 1;
+                self.player_radius =
+                    MIN_RADIUS + crafting::GROWTH_SCALE * (self.expansion_count as f32).sqrt();
+            }
+            CraftOutput::SpawnParticle { x, y, resource_type } => {
+                self.interior_particles.push(InteriorParticle { x, y, resource_type });
+            }
+        }
+    }
+
+    fn tick_status(&mut self) {
         let counts = interior::count_particles(&self.interior_particles);
         self.atp_particle_count = counts.atp;
         self.glucose_particle_count = counts.glucose;
         self.amino_acid_particle_count = counts.amino_acid;
         self.nucleotide_particle_count = counts.nucleotide;
 
-        // Death check: fully depleted when no motor charge AND no ATP/glucose particles
-        // AND no glucose buffered/processing in zymases
         let total_charge: f32 = self.motors.iter().map(|m| m.charge).sum();
         let zymase_has_fuel = self.zymases.iter().any(|z| z.buffer > 0 || z.processing);
         if total_charge <= 0.0 && counts.atp == 0 && counts.glucose == 0 && !zymase_has_fuel {
             self.player_alive = false;
         }
 
-        // Backward-compatible energy ratio for WorldRenderer cell color
         self.player_atp = total_charge;
         self.player_energy_ratio = total_charge / self.player_max_atp.max(1.0);
+    }
 
-        self.sync_packed_arrays();
-        self.sync_interior_arrays();
-        self.sync_motor_arrays();
-        self.sync_zymase_arrays();
-        self.sync_mrna_progress();
-        self.sync_crafting_state();
-        self.sync_rule_arrays();
+    fn tick_progression(&mut self, max_nucleotide: i32) {
+        let tech_ctx = tech::TechContext {
+            max_nucleotide,
+        };
+        let any_completed = tech::tick_techs(&mut self.techs, &mut self.rules, &tech_ctx);
+        if any_completed {
+            self.techs_dirty = true;
+        }
 
-        let tech_ctx = tech::TechContext { max_nucleotide: max_nucleotide };
-        tech::tick_techs(&mut self.techs, &mut self.rules, &tech_ctx);
-
-        // Grant sensor when Chemoreceptor tech completes
         if self.sensor_count == 0 {
             if self.techs.get(4).map_or(false, |t| t.completed) {
                 self.sensor_count = 1;
             }
         }
 
-        // Unlock nucleus when Programmable Nucleus tech completes
         if !self.nucleus_unlocked {
             if self.techs.get(5).map_or(false, |t| t.completed) {
                 self.nucleus_unlocked = true;
@@ -989,40 +1035,33 @@ impl Simulation {
                     processing: false,
                     timer: 0.0,
                 });
+                self.nuclei_dirty = true;
             }
         }
+    }
 
-        // Nucleus timed crafting
-        let nucleus_outputs = crafting::tick_nuclei(&mut self.nuclei, dt);
-        for output in nucleus_outputs {
-            match output {
-                CraftOutput::SpawnZymase { x, y } => {
-                    self.zymases.push(Zymase {
-                        x,
-                        y,
-                        buffer: 0,
-                        processing: false,
-                        timer: 0.0,
-                    });
-                }
-                CraftOutput::SpawnMotor { angle } => {
-                    self.motors.push(Motor {
-                        x: angle.cos() * MOTOR_MEMBRANE_RADIUS,
-                        y: angle.sin() * MOTOR_MEMBRANE_RADIUS,
-                        charge: 0.0,
-                    });
-                }
-                CraftOutput::GrowCell => {
-                    self.expansion_count += 1;
-                    self.player_radius =
-                        MIN_RADIUS + crafting::GROWTH_SCALE * (self.expansion_count as f32).sqrt();
-                }
-                _ => {}
-            }
+    fn tick_sync(&mut self) {
+        self.sync_packed_arrays();
+        self.sync_interior_arrays();
+        if self.motors_dirty {
+            self.sync_motor_arrays();
+            self.motors_dirty = false;
         }
-
-        self.sync_nucleus_arrays();
-        self.sync_tech_arrays();
+        if self.zymases_dirty {
+            self.sync_zymase_arrays();
+            self.zymases_dirty = false;
+        }
+        self.sync_mrna_progress();
+        self.sync_crafting_state();
+        self.sync_rule_arrays();
+        if self.nuclei_dirty {
+            self.sync_nucleus_arrays();
+            self.nuclei_dirty = false;
+        }
+        if self.techs_dirty {
+            self.sync_tech_arrays();
+            self.techs_dirty = false;
+        }
         self.sync_autonomy_state();
     }
 
@@ -1392,6 +1431,7 @@ impl Simulation {
             if matches!(self.rules[idx].threshold, rules::Threshold::Fixed(_)) {
                 self.rules[idx].threshold = rules::default_threshold_for_metric(new_metric);
             }
+
         }
     }
 
@@ -1400,6 +1440,7 @@ impl Simulation {
         let idx = i as usize;
         if idx < self.rules.len() && !self.rules[idx].locked {
             self.rules[idx].subject = self.rules[idx].subject.next();
+
         }
     }
 
@@ -1408,6 +1449,7 @@ impl Simulation {
         let idx = i as usize;
         if idx < self.rules.len() && !self.rules[idx].locked {
             self.rules[idx].relation = self.rules[idx].relation.next();
+
         }
     }
 
@@ -1416,6 +1458,7 @@ impl Simulation {
         let idx = i as usize;
         if idx < self.rules.len() && !self.rules[idx].locked {
             self.rules[idx].target = self.rules[idx].target.next();
+
         }
     }
 
@@ -1428,6 +1471,7 @@ impl Simulation {
                 let delta = step * direction as f32;
                 *v = (*v + delta).max(0.0);
             }
+
         }
     }
 
@@ -1436,6 +1480,7 @@ impl Simulation {
         let idx = i as usize;
         if idx < self.rules.len() && !self.rules[idx].locked {
             self.rules[idx].threshold = rules::Threshold::Fixed(value.max(0.0));
+
         }
     }
 
@@ -1445,6 +1490,7 @@ impl Simulation {
         if idx < self.rules.len() && !self.rules[idx].locked {
             self.rules[idx].threshold =
                 rules::Threshold::Variable(rules::MrnaTarget::from_index(target_idx as usize));
+
         }
     }
 
@@ -1454,6 +1500,7 @@ impl Simulation {
         if idx < self.rules.len() && !self.rules[idx].locked {
             self.rules[idx].threshold =
                 rules::default_threshold_for_metric(self.rules[idx].metric);
+
         }
     }
 
@@ -1462,6 +1509,7 @@ impl Simulation {
         let idx = i as usize;
         if idx < self.rules.len() && !self.rules[idx].locked {
             self.rules[idx].enabled = !self.rules[idx].enabled;
+
         }
     }
 
@@ -1480,6 +1528,7 @@ impl Simulation {
                 current_threshold_value: 0.0,
                 locked: false,
             });
+
         }
     }
 
@@ -1488,6 +1537,7 @@ impl Simulation {
         let idx = i as usize;
         if idx < self.rules.len() && !self.rules[idx].locked {
             self.rules.remove(idx);
+
         }
     }
 
@@ -1573,5 +1623,11 @@ impl Simulation {
         self.sync_interior_arrays();
         self.sync_motor_arrays();
         self.sync_zymase_arrays();
+
+        // Reset dirty flags (all synced above)
+        self.motors_dirty = false;
+        self.zymases_dirty = false;
+        self.techs_dirty = true;
+        self.nuclei_dirty = true;
     }
 }
