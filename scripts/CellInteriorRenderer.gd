@@ -67,7 +67,7 @@ func _draw() -> void:
 		# Zymase label
 		var z_label_pos := zymase_pos + Vector2(-15, zymase_r + 14)
 		if enhanced_labels:
-			draw_rect(Rect2(z_label_pos + Vector2(-3, -font_size + 2), Vector2(zymase_label_width + 6, font_size + 4)), Color(0.0, 0.0, 0.0, 0.5), true, -1.0, true)
+			draw_rect(Rect2(z_label_pos + Vector2(-3, -font_size + 2), Vector2(zymase_label_width + 6, font_size + 4)), Color(0.0, 0.0, 0.0, 0.5))
 		draw_string(font, z_label_pos, "Zymase", HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(0.4, 0.9, 0.4, label_alpha_base))
 
 		# Zymase processing progress arc
@@ -187,7 +187,7 @@ func _draw() -> void:
 		var mrna_label_pos := center + Vector2(-15, 22)
 		if enhanced_labels and not is_suppressed:
 			var lw: float = font.get_string_size(mrna_names[i], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
-			draw_rect(Rect2(mrna_label_pos + Vector2(-3, -font_size + 2), Vector2(lw + 6, font_size + 4)), Color(0.0, 0.0, 0.0, 0.5), true, -1.0, true)
+			draw_rect(Rect2(mrna_label_pos + Vector2(-3, -font_size + 2), Vector2(lw + 6, font_size + 4)), Color(0.0, 0.0, 0.0, 0.5))
 		draw_string(font, mrna_label_pos, mrna_names[i], HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(col.r, col.g, col.b, label_alpha))
 
 		# Suppression indicator: red X near the strand
@@ -230,11 +230,11 @@ func _draw() -> void:
 			draw_arc(center, 8.0, 0, TAU, 24, col, 2.0)
 
 			# Label
-			var label_text := "Nuc:" + nuc_names[tt]
+			var label_text: String = "Nuc:" + nuc_names[tt]
 			var nuc_label_pos := center + Vector2(-20, 26)
 			if enhanced_labels:
 				var lw: float = font.get_string_size(label_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x
-				draw_rect(Rect2(nuc_label_pos + Vector2(-3, -font_size + 2), Vector2(lw + 6, font_size + 4)), Color(0.0, 0.0, 0.0, 0.5), true, -1.0, true)
+				draw_rect(Rect2(nuc_label_pos + Vector2(-3, -font_size + 2), Vector2(lw + 6, font_size + 4)), Color(0.0, 0.0, 0.0, 0.5))
 			draw_string(font, nuc_label_pos, label_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(col.r, col.g, col.b, label_alpha_base))
 
 			# Progress pips
@@ -319,8 +319,8 @@ func _draw() -> void:
 				var n_req: PackedInt32Array = simulation.nucleus_required
 				if n_xs.size() > 0:
 					tooltip_pos = Vector2(n_xs[0], n_ys[0]) + Vector2(20, -30)
-					var t_name := ["Zymase", "Motor", "Membrane"][clampi(n_targets[0], 0, 2)] if n_targets.size() > 0 else "Zymase"
-					var req_val := n_req[0] if n_req.size() > 0 else 8
+					var t_name: String = ["Zymase", "Motor", "Membrane"][clampi(n_targets[0], 0, 2)] if n_targets.size() > 0 else "Zymase"
+					var req_val: int = n_req[0] if n_req.size() > 0 else 8
 					lines = PackedStringArray(["Programmable Nucleus", str(req_val) + " Nucleotides -> " + t_name, "Click to cycle target"])
 		if lines.size() > 0:
 			var line_h := 14

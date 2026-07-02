@@ -238,8 +238,6 @@ pub struct Simulation {
     dragged_particle_type: i32,
 
     // Dirty flags for sync optimization
-    motors_dirty: bool,
-    zymases_dirty: bool,
     techs_dirty: bool,
     nuclei_dirty: bool,
 
@@ -390,8 +388,6 @@ impl INode for Simulation {
             drag_active: false,
             dragged_particle_type: -1,
 
-            motors_dirty: true,
-            zymases_dirty: true,
             techs_dirty: true,
             nuclei_dirty: true,
 
@@ -828,7 +824,6 @@ impl Simulation {
                     for &i in &charged_motors {
                         self.motors[i].charge = (self.motors[i].charge - cost_each).max(0.0);
                     }
-                    self.motors_dirty = true;
                 }
             } else {
                 self.velocity_x *= 0.95_f32.powf(dt * 60.0);
@@ -849,7 +844,6 @@ impl Simulation {
             if ei < self.zymases.len() {
                 self.zymases[ei].x = self.dragged_particle_x;
                 self.zymases[ei].y = self.dragged_particle_y;
-                self.zymases_dirty = true;
             }
         }
         if let Some(mi) = self.dragged_mrna_index {
@@ -865,7 +859,6 @@ impl Simulation {
                 self.motors[mi].y = angle.sin() * MOTOR_MEMBRANE_RADIUS;
                 self.dragged_particle_x = self.motors[mi].x;
                 self.dragged_particle_y = self.motors[mi].y;
-                self.motors_dirty = true;
             }
         }
 
@@ -916,8 +909,6 @@ impl Simulation {
                         }
                     }
                 }
-                self.zymases_dirty = true;
-                self.motors_dirty = true;
                 self.nuclei_dirty = true;
             }
         }
@@ -930,7 +921,6 @@ impl Simulation {
                     self.interior_particles.push(InteriorParticle { x, y, resource_type });
                 }
             }
-            self.zymases_dirty = true;
         }
 
         // mRNA timed crafting
@@ -969,7 +959,6 @@ impl Simulation {
                     processing: false,
                     timer: 0.0,
                 });
-                self.zymases_dirty = true;
             }
             CraftOutput::SpawnMotor { angle } => {
                 self.motors.push(Motor {
@@ -977,7 +966,6 @@ impl Simulation {
                     y: angle.sin() * MOTOR_MEMBRANE_RADIUS,
                     charge: 0.0,
                 });
-                self.motors_dirty = true;
             }
             CraftOutput::GrowCell => {
                 self.expansion_count += 1;
@@ -1043,14 +1031,8 @@ impl Simulation {
     fn tick_sync(&mut self) {
         self.sync_packed_arrays();
         self.sync_interior_arrays();
-        if self.motors_dirty {
-            self.sync_motor_arrays();
-            self.motors_dirty = false;
-        }
-        if self.zymases_dirty {
-            self.sync_zymase_arrays();
-            self.zymases_dirty = false;
-        }
+        self.sync_motor_arrays();
+        self.sync_zymase_arrays();
         self.sync_mrna_progress();
         self.sync_crafting_state();
         self.sync_rule_arrays();
@@ -1624,9 +1606,6 @@ impl Simulation {
         self.sync_motor_arrays();
         self.sync_zymase_arrays();
 
-        // Reset dirty flags (all synced above)
-        self.motors_dirty = false;
-        self.zymases_dirty = false;
         self.techs_dirty = true;
         self.nuclei_dirty = true;
     }
