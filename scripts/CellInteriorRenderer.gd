@@ -176,6 +176,57 @@ func _draw() -> void:
 			var tprog: float = 1.0 - mrna_tmrs[i] / 2.0
 			draw_arc(center, 16.0, -PI / 2, -PI / 2 + tprog * TAU, 32, Color(col.r, col.g, col.b, 0.8), 2.5)
 
+	# Nucleus organelles
+	if simulation.nucleus_unlocked_flag:
+		var nuc_xs: PackedFloat32Array = simulation.nucleus_xs
+		var nuc_ys: PackedFloat32Array = simulation.nucleus_ys
+		var nuc_targets: PackedInt32Array = simulation.nucleus_target_types
+		var nuc_prog: PackedInt32Array = simulation.nucleus_progress
+		var nuc_req: PackedInt32Array = simulation.nucleus_required
+		var nuc_proc: PackedInt32Array = simulation.nucleus_processing_flags
+		var nuc_tmrs: PackedFloat32Array = simulation.nucleus_timers
+		var nuc_names := ["Zymase", "Motor", "Membrane"]
+
+		for ni in range(nuc_xs.size()):
+			var center := Vector2(nuc_xs[ni], nuc_ys[ni])
+			var tt: int = clampi(nuc_targets[ni], 0, 2) if ni < nuc_targets.size() else 0
+			var col: Color = mrna_colors[tt]
+
+			# Drop-target glow when dragging nucleotide
+			if simulation.drag_active and simulation.dragged_particle_type == 3:
+				if ni < nuc_prog.size() and ni < nuc_req.size():
+					if nuc_prog[ni] < nuc_req[ni] and nuc_proc[ni] == 0:
+						draw_circle(center, 18.0, Color(0.9, 0.3, 0.4, 0.25))
+						draw_arc(center, 18.0, 0, TAU, 16, Color(0.9, 0.4, 0.5, 0.7), 2.0)
+
+			# Double circle (outer + inner)
+			draw_arc(center, 14.0, 0, TAU, 32, col, 2.5)
+			draw_arc(center, 8.0, 0, TAU, 24, col, 2.0)
+
+			# Label
+			var label_text := "Nuc:" + nuc_names[tt]
+			draw_string(font, center + Vector2(-20, 26), label_text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, Color(col.r, col.g, col.b, 0.6))
+
+			# Progress pips
+			if ni < nuc_prog.size() and ni < nuc_req.size():
+				var req: int = nuc_req[ni]
+				var prog: int = nuc_prog[ni]
+				var pip_y := center.y + 14.0
+				var total_width: float = (req - 1) * 6.0
+				var pip_start_x: float = center.x - total_width / 2.0
+				for p in range(req):
+					var pip_pos := Vector2(pip_start_x + p * 6.0, pip_y)
+					if p < prog:
+						draw_circle(pip_pos, 2.5, col)
+					else:
+						draw_circle(pip_pos, 2.5, Color(0.3, 0.3, 0.3))
+						draw_arc(pip_pos, 2.5, 0, TAU, 8, Color(0.5, 0.5, 0.5), 1.0)
+
+			# Processing arc
+			if ni < nuc_proc.size() and ni < nuc_tmrs.size() and nuc_proc[ni] == 1:
+				var tprog: float = 1.0 - nuc_tmrs[ni] / 2.0
+				draw_arc(center, 16.0, -PI / 2, -PI / 2 + tprog * TAU, 32, Color(col.r, col.g, col.b, 0.8), 2.5)
+
 	# Interior particles
 	var xs: PackedFloat32Array = simulation.interior_xs
 	var ys: PackedFloat32Array = simulation.interior_ys
@@ -231,6 +282,16 @@ func _draw() -> void:
 			3:
 				tooltip_pos = Vector2(mrna_xs[2], mrna_ys[2]) + Vector2(20, -30)
 				lines = PackedStringArray(["Membrane Protein", "5 Amino Acids -> Membrane", "Time: 2.0s each"])
+			4:
+				var n_xs: PackedFloat32Array = simulation.nucleus_xs
+				var n_ys: PackedFloat32Array = simulation.nucleus_ys
+				var n_targets: PackedInt32Array = simulation.nucleus_target_types
+				var n_req: PackedInt32Array = simulation.nucleus_required
+				if n_xs.size() > 0:
+					tooltip_pos = Vector2(n_xs[0], n_ys[0]) + Vector2(20, -30)
+					var t_name := ["Zymase", "Motor", "Membrane"][clampi(n_targets[0], 0, 2)] if n_targets.size() > 0 else "Zymase"
+					var req_val := n_req[0] if n_req.size() > 0 else 8
+					lines = PackedStringArray(["Programmable Nucleus", str(req_val) + " Nucleotides -> " + t_name, "Click to cycle target"])
 		if lines.size() > 0:
 			var line_h := 14
 			var padding := Vector2(6, 4)

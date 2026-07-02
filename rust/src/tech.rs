@@ -4,7 +4,12 @@ use crate::rules::{Relation, Rule};
 pub enum TechTrigger {
     RuleFiring { rule_index: usize },
     TechCompleted { tech_index: usize },
+    ResourceCapacity { resource_type: i32, threshold: i32 },
     None,
+}
+
+pub struct TechContext {
+    pub max_nucleotide: i32,
 }
 
 #[derive(Clone, Debug)]
@@ -53,10 +58,17 @@ pub fn default_techs() -> Vec<Tech> {
             completed: false,
             trigger: TechTrigger::TechCompleted { tech_index: 0 },
         },
+        Tech {
+            name: "Programmable Nucleus".into(),
+            description: "Consume nucleotides to produce any mRNA type".into(),
+            progress: 0.0,
+            completed: false,
+            trigger: TechTrigger::ResourceCapacity { resource_type: 3, threshold: 8 },
+        },
     ]
 }
 
-pub fn tick_techs(techs: &mut [Tech], rules: &mut [Rule]) {
+pub fn tick_techs(techs: &mut [Tech], rules: &mut [Rule], ctx: &TechContext) {
     // Collect completion states and progress for TechCompleted checks
     let completed: Vec<bool> = techs.iter().map(|t| t.completed).collect();
     let progress: Vec<f32> = techs.iter().map(|t| t.progress).collect();
@@ -101,6 +113,18 @@ pub fn tick_techs(techs: &mut [Tech], rules: &mut [Rule]) {
                     tech.progress = progress[tech_index] * 0.5;
                 }
             }
+            TechTrigger::ResourceCapacity { resource_type, threshold } => {
+                let capacity = match resource_type {
+                    3 => ctx.max_nucleotide,
+                    _ => 0,
+                };
+                if capacity >= threshold {
+                    tech.progress = 1.0;
+                    tech.completed = true;
+                } else if threshold > 0 {
+                    tech.progress = (capacity as f32 / threshold as f32).clamp(0.0, 0.99);
+                }
+            }
             TechTrigger::None => {
                 // Placeholder tech — never progresses
             }
@@ -120,7 +144,7 @@ mod tests {
 
         // 1 motor at r=15: surfdens = 1/(2*pi*15) ≈ 0.0106, threshold = 0.031
         rules::evaluate_suppressions(&mut rule_set, 1, 1, 0, 15.0);
-        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
         assert!(techs[0].progress > 0.0);
         assert!(techs[0].progress < 1.0);
         assert!(!techs[0].completed);
@@ -128,7 +152,7 @@ mod tests {
         // 2 motors: surfdens ≈ 0.0212, progress should be higher
         let prev_progress = techs[0].progress;
         rules::evaluate_suppressions(&mut rule_set, 2, 1, 0, 15.0);
-        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
         assert!(techs[0].progress > prev_progress);
         assert!(!techs[0].completed);
     }
@@ -141,7 +165,7 @@ mod tests {
 
         // Now at threshold: 3 motors at r=15
         rules::evaluate_suppressions(&mut rule_set, 3, 1, 0, 15.0);
-        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
         assert!((techs[0].progress - 1.0).abs() < f32::EPSILON);
         assert!(techs[0].completed);
         // Rule should be unlocked
@@ -155,12 +179,12 @@ mod tests {
 
         // Complete it
         rules::evaluate_suppressions(&mut rule_set, 3, 1, 0, 15.0);
-        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
         assert!(techs[0].completed);
 
         // Drop below — stays completed
         rules::evaluate_suppressions(&mut rule_set, 1, 1, 0, 15.0);
-        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
         assert!(techs[0].completed);
         assert!((techs[0].progress - 1.0).abs() < f32::EPSILON);
     }
@@ -171,7 +195,7 @@ mod tests {
         let mut rule_set = rules::default_rules();
         // With 0 motors, surface density is 0 → progress should be 0
         rules::evaluate_suppressions(&mut rule_set, 0, 1, 0, 15.0);
-        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
         assert_eq!(techs[0].progress, 0.0);
         assert!(!techs[0].completed);
     }
@@ -183,9 +207,9 @@ mod tests {
 
         // Tick multiple times with active rules
         rules::evaluate_suppressions(&mut rule_set, 3, 1, 0, 15.0);
-        tick_techs(&mut techs, &mut rule_set);
-        tick_techs(&mut techs, &mut rule_set);
-        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
 
         // Techs with TechTrigger::None should remain at 0 progress
         for tech in &techs[1..4] {
@@ -197,7 +221,7 @@ mod tests {
     #[test]
     fn default_techs_returns_expected_entries() {
         let techs = default_techs();
-        assert_eq!(techs.len(), 5);
+        assert_eq!(techs.len(), 6);
 
         assert_eq!(techs[0].name, "Motor Efficiency");
         assert!(matches!(techs[0].trigger, TechTrigger::RuleFiring { rule_index: 0 }));
@@ -213,6 +237,9 @@ mod tests {
 
         assert_eq!(techs[4].name, "Chemoreceptor");
         assert!(matches!(techs[4].trigger, TechTrigger::TechCompleted { tech_index: 0 }));
+
+        assert_eq!(techs[5].name, "Programmable Nucleus");
+        assert!(matches!(techs[5].trigger, TechTrigger::ResourceCapacity { resource_type: 3, threshold: 8 }));
 
         for tech in &techs {
             assert_eq!(tech.progress, 0.0);
@@ -230,11 +257,11 @@ mod tests {
 
         // Complete Motor Efficiency by firing its rule
         rules::evaluate_suppressions(&mut rule_set, 3, 1, 0, 15.0);
-        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
         assert!(techs[0].completed);
 
         // Now tick again — Chemoreceptor should complete
-        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
         assert!(techs[4].completed);
         assert!((techs[4].progress - 1.0).abs() < f32::EPSILON);
     }
@@ -246,7 +273,7 @@ mod tests {
 
         // Partially progress Motor Efficiency (prereq for Chemoreceptor)
         rules::evaluate_suppressions(&mut rule_set, 1, 1, 0, 15.0);
-        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
 
         assert!(!techs[0].completed);
         assert!(techs[0].progress > 0.0);
@@ -254,7 +281,7 @@ mod tests {
         // Chemoreceptor should show half of Motor Efficiency's progress
         let expected = techs[0].progress * 0.5;
         // Note: uses snapshot from before this tick, so check next tick
-        tick_techs(&mut techs, &mut rule_set);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
         assert!(
             techs[4].progress > 0.0,
             "Chemoreceptor should show partial progress, got {}",
@@ -263,5 +290,37 @@ mod tests {
         assert!(!techs[4].completed);
         // Progress should be approximately half of prereq
         let _ = expected; // snapshot-based, verify non-zero is sufficient
+    }
+
+    // --- ResourceCapacity trigger tests ---
+
+    #[test]
+    fn resource_capacity_fires_at_threshold() {
+        let mut techs = default_techs();
+        let mut rule_set = rules::default_rules();
+        rules::evaluate_suppressions(&mut rule_set, 0, 0, 0, 15.0);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 8 });
+        assert!(techs[5].completed);
+        assert!((techs[5].progress - 1.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn resource_capacity_shows_gradual_progress() {
+        let mut techs = default_techs();
+        let mut rule_set = rules::default_rules();
+        rules::evaluate_suppressions(&mut rule_set, 0, 0, 0, 15.0);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 4 });
+        assert!(!techs[5].completed);
+        assert!((techs[5].progress - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn resource_capacity_zero_stays_zero() {
+        let mut techs = default_techs();
+        let mut rule_set = rules::default_rules();
+        rules::evaluate_suppressions(&mut rule_set, 0, 0, 0, 15.0);
+        tick_techs(&mut techs, &mut rule_set, &TechContext { max_nucleotide: 0 });
+        assert!(!techs[5].completed);
+        assert_eq!(techs[5].progress, 0.0);
     }
 }

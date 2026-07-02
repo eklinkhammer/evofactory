@@ -365,7 +365,7 @@ mod tests {
 
         // Fire the rule so tech completes
         rules::evaluate_suppressions(&mut rules, 4, 1, 1, 23.0);
-        tech::tick_techs(&mut techs, &mut rules);
+        tech::tick_techs(&mut techs, &mut rules, &tech::TechContext { max_nucleotide: 0 });
 
         let a = build_tech_arrays(&techs);
         assert_eq!(a.completed[0], 1);

@@ -34,3 +34,12 @@ pub struct Motor {
     pub y: f32,
     pub charge: f32,
 }
+
+pub struct Nucleus {
+    pub x: f32,
+    pub y: f32,
+    pub target_type: i32,   // 0=Zymase, 1=Motor, 2=Membrane
+    pub progress: i32,
+    pub processing: bool,
+    pub timer: f32,
+}

@@ -16,6 +16,10 @@ pub const MRNA_ANGLES: [f32; MRNA_COUNT] = [
     30.0 * std::f32::consts::PI / 180.0,  // membrane — upper-right
 ];
 
+pub const NUCLEUS_CRAFT_TIME: f32 = 2.0;
+pub const NUCLEUS_COLLISION_DIST: f32 = 20.0;
+pub const NUCLEUS_ANGLE: f32 = 210.0 * std::f32::consts::PI / 180.0;
+
 pub enum CraftOutput {
     SpawnParticle { x: f32, y: f32, resource_type: i32 },
     SpawnZymase { x: f32, y: f32 },
@@ -128,6 +132,60 @@ pub fn feed_motor(motor: &mut Motor) -> bool {
     true
 }
 
+// --- Nucleus ---
+
+/// Find nearest nucleus within collision range that is not full and not processing.
+pub fn find_nucleus_target(x: f32, y: f32, nuclei: &[Nucleus]) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    let mut best_dist = NUCLEUS_COLLISION_DIST;
+    for (i, n) in nuclei.iter().enumerate() {
+        let dx = x - n.x;
+        let dy = y - n.y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        if dist < best_dist && n.progress < MRNA_REQUIRED[n.target_type.clamp(0, 2) as usize] && !n.processing {
+            best_dist = dist;
+            best = Some(i);
+        }
+    }
+    best
+}
+
+/// Feed a nucleotide to a nucleus. Starts timer if threshold reached. Returns true if consumed.
+pub fn feed_nucleus(nucleus: &mut Nucleus) -> bool {
+    let required = MRNA_REQUIRED[nucleus.target_type.clamp(0, 2) as usize];
+    if nucleus.progress >= required || nucleus.processing {
+        return false;
+    }
+    nucleus.progress += 1;
+    if nucleus.progress >= required {
+        nucleus.processing = true;
+        nucleus.timer = NUCLEUS_CRAFT_TIME;
+    }
+    true
+}
+
+/// Tick all nuclei. Returns spawn commands for completed crafts.
+pub fn tick_nuclei(nuclei: &mut [Nucleus], dt: f32) -> Vec<CraftOutput> {
+    let mut outputs = Vec::new();
+    for n in nuclei.iter_mut() {
+        if n.processing {
+            n.timer -= dt;
+            if n.timer <= 0.0 {
+                n.processing = false;
+                n.timer = 0.0;
+                n.progress = 0;
+                match n.target_type {
+                    0 => outputs.push(CraftOutput::SpawnZymase { x: n.x, y: n.y }),
+                    1 => outputs.push(CraftOutput::SpawnMotor { angle: MRNA_ANGLES[1] }),
+                    2 => outputs.push(CraftOutput::GrowCell),
+                    _ => {}
+                }
+            }
+        }
+    }
+    outputs
+}
+
 // --- Timed crafting ---
 
 /// Tick all zymases. Returns spawn commands for produced ATP particles.
@@ -216,6 +274,7 @@ pub fn auto_consume(
     dragged_index: Option<usize>,
     player_glucose: &mut f32,
     suppressions: &[bool; MRNA_COUNT],
+    nuclei: &mut [Nucleus],
 ) -> Vec<usize> {
     // Phase 1: detect candidates
     let mut consumed: Vec<usize> = Vec::new();
@@ -266,6 +325,21 @@ pub fn auto_consume(
                     }
                 }
             }
+            3 => {
+                // Nucleotide → nucleus not full and not processing
+                for n in nuclei.iter() {
+                    let dx = p.x - n.x;
+                    let dy = p.y - n.y;
+                    let dist = (dx * dx + dy * dy).sqrt();
+                    if dist < NUCLEUS_COLLISION_DIST
+                        && n.progress < MRNA_REQUIRED[n.target_type.clamp(0, 2) as usize]
+                        && !n.processing
+                    {
+                        consumed.push(i);
+                        break;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -293,6 +367,12 @@ pub fn auto_consume(
             2 => {
                 if let Some(mi) = find_motor_target(p.x, p.y, motors) {
                     feed_motor(&mut motors[mi]);
+                    actually_consumed.push(i);
+                }
+            }
+            3 => {
+                if let Some(ni) = find_nucleus_target(p.x, p.y, nuclei) {
+                    feed_nucleus(&mut nuclei[ni]);
                     actually_consumed.push(i);
                 }
             }
@@ -517,6 +597,7 @@ mod tests {
             None,
             &mut player_glucose,
             &suppressions,
+            &mut vec![],
         );
         assert_eq!(consumed, vec![0]);
         assert!(zymases[0].processing);
@@ -552,9 +633,164 @@ mod tests {
             None,
             &mut player_glucose,
             &suppressions,
+            &mut vec![],
         );
         assert!(consumed.is_empty());
         assert_eq!(player_glucose, 1.0);
+    }
+
+    fn make_nucleus(x: f32, y: f32, target_type: i32, progress: i32, processing: bool) -> Nucleus {
+        Nucleus { x, y, target_type, progress, processing, timer: 0.0 }
+    }
+
+    // --- find_nucleus_target tests ---
+
+    #[test]
+    fn find_nucleus_target_nearest_within_range() {
+        let nuclei = vec![
+            make_nucleus(5.0, 0.0, 0, 0, false),
+            make_nucleus(100.0, 0.0, 0, 0, false),
+        ];
+        assert_eq!(find_nucleus_target(0.0, 0.0, &nuclei), Some(0));
+    }
+
+    #[test]
+    fn find_nucleus_target_full_returns_none() {
+        let nuclei = vec![
+            make_nucleus(5.0, 0.0, 0, MRNA_REQUIRED[0], false),
+        ];
+        assert_eq!(find_nucleus_target(0.0, 0.0, &nuclei), None);
+    }
+
+    #[test]
+    fn find_nucleus_target_processing_returns_none() {
+        let nuclei = vec![
+            make_nucleus(5.0, 0.0, 0, 0, true),
+        ];
+        assert_eq!(find_nucleus_target(0.0, 0.0, &nuclei), None);
+    }
+
+    #[test]
+    fn find_nucleus_target_out_of_range_returns_none() {
+        let nuclei = vec![
+            make_nucleus(100.0, 100.0, 0, 0, false),
+        ];
+        assert_eq!(find_nucleus_target(0.0, 0.0, &nuclei), None);
+    }
+
+    // --- feed_nucleus tests ---
+
+    #[test]
+    fn feed_nucleus_increments_progress() {
+        let mut nucleus = make_nucleus(0.0, 0.0, 0, 0, false);
+        assert!(feed_nucleus(&mut nucleus));
+        assert_eq!(nucleus.progress, 1);
+        assert!(!nucleus.processing);
+    }
+
+    #[test]
+    fn feed_nucleus_starts_timer_at_threshold() {
+        let mut nucleus = make_nucleus(0.0, 0.0, 0, MRNA_REQUIRED[0] - 1, false);
+        assert!(feed_nucleus(&mut nucleus));
+        assert_eq!(nucleus.progress, MRNA_REQUIRED[0]);
+        assert!(nucleus.processing);
+        assert_eq!(nucleus.timer, NUCLEUS_CRAFT_TIME);
+    }
+
+    #[test]
+    fn feed_nucleus_full_returns_false() {
+        let mut nucleus = make_nucleus(0.0, 0.0, 0, MRNA_REQUIRED[0], false);
+        assert!(!feed_nucleus(&mut nucleus));
+    }
+
+    #[test]
+    fn feed_nucleus_processing_returns_false() {
+        let mut nucleus = make_nucleus(0.0, 0.0, 0, 0, true);
+        assert!(!feed_nucleus(&mut nucleus));
+    }
+
+    // --- tick_nuclei tests ---
+
+    #[test]
+    fn tick_nuclei_target_0_spawns_zymase() {
+        let mut nuclei = vec![Nucleus {
+            x: 10.0, y: 10.0, target_type: 0, progress: MRNA_REQUIRED[0],
+            processing: true, timer: 0.1,
+        }];
+        let outputs = tick_nuclei(&mut nuclei, 0.2);
+        assert_eq!(outputs.len(), 1);
+        assert!(matches!(outputs[0], CraftOutput::SpawnZymase { .. }));
+    }
+
+    #[test]
+    fn tick_nuclei_target_1_spawns_motor() {
+        let mut nuclei = vec![Nucleus {
+            x: 10.0, y: 10.0, target_type: 1, progress: MRNA_REQUIRED[1],
+            processing: true, timer: 0.1,
+        }];
+        let outputs = tick_nuclei(&mut nuclei, 0.2);
+        assert_eq!(outputs.len(), 1);
+        assert!(matches!(outputs[0], CraftOutput::SpawnMotor { .. }));
+    }
+
+    #[test]
+    fn tick_nuclei_target_2_grows_cell() {
+        let mut nuclei = vec![Nucleus {
+            x: 10.0, y: 10.0, target_type: 2, progress: MRNA_REQUIRED[2],
+            processing: true, timer: 0.1,
+        }];
+        let outputs = tick_nuclei(&mut nuclei, 0.2);
+        assert_eq!(outputs.len(), 1);
+        assert!(matches!(outputs[0], CraftOutput::GrowCell));
+    }
+
+    #[test]
+    fn tick_nuclei_resets_state_on_completion() {
+        let mut nuclei = vec![Nucleus {
+            x: 10.0, y: 10.0, target_type: 0, progress: MRNA_REQUIRED[0],
+            processing: true, timer: 0.1,
+        }];
+        let _outputs = tick_nuclei(&mut nuclei, 0.2);
+        assert!(!nuclei[0].processing);
+        assert_eq!(nuclei[0].timer, 0.0);
+        assert_eq!(nuclei[0].progress, 0);
+    }
+
+    // --- auto_consume nucleotide test ---
+
+    #[test]
+    fn auto_consume_nucleotide_near_nucleus() {
+        let particles = vec![InteriorParticle {
+            x: 5.0,
+            y: 0.0,
+            resource_type: 3,
+        }];
+        let mut zymases = vec![];
+        let mrna_xs = [100.0; MRNA_COUNT];
+        let mrna_ys = [100.0; MRNA_COUNT];
+        let mut mrna_progress = [0; MRNA_COUNT];
+        let mut mrna_processing = [false; MRNA_COUNT];
+        let mut mrna_timers = [0.0; MRNA_COUNT];
+        let mut motors = vec![];
+        let mut player_glucose = 0.0;
+        let suppressions = [false; MRNA_COUNT];
+        let mut nuclei = vec![make_nucleus(0.0, 0.0, 0, 0, false)];
+
+        let consumed = auto_consume(
+            &particles,
+            &mut zymases,
+            &mrna_xs,
+            &mrna_ys,
+            &mut mrna_progress,
+            &mut mrna_processing,
+            &mut mrna_timers,
+            &mut motors,
+            None,
+            &mut player_glucose,
+            &suppressions,
+            &mut nuclei,
+        );
+        assert_eq!(consumed, vec![0]);
     }
 
     #[test]
@@ -586,6 +822,7 @@ mod tests {
             None,
             &mut player_glucose,
             &suppressions,
+            &mut vec![],
         );
         assert!(consumed.is_empty());
         assert_eq!(mrna_progress[0], 0); // strand 0 untouched

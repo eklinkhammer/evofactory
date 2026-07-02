@@ -89,6 +89,7 @@ func _process(delta: float) -> void:
 			simulation.restart()
 			camera.exit_interior()
 			dragging = false
+			interior_renderer.tooltip_target = -1
 		simulation.tick(delta)
 		world_renderer.queue_redraw()
 		if simulation.interior_view:
@@ -173,6 +174,14 @@ func _check_tooltip_click(local_pos: Vector2) -> void:
 			if local_pos.distance_to(Vector2(mrna_xs[i], mrna_ys[i])) < 20.0:
 				hit = i + 1
 				break
+	if hit < 0 and simulation.nucleus_unlocked_flag:
+		var nuc_xs: PackedFloat32Array = simulation.nucleus_xs
+		var nuc_ys: PackedFloat32Array = simulation.nucleus_ys
+		for ni in range(nuc_xs.size()):
+			if local_pos.distance_to(Vector2(nuc_xs[ni], nuc_ys[ni])) < 20.0:
+				simulation.cycle_nucleus_target(ni)
+				interior_renderer.tooltip_target = 4
+				return
 	if hit >= 0 and interior_renderer.tooltip_target == hit:
 		interior_renderer.tooltip_target = -1
 	elif hit >= 0:

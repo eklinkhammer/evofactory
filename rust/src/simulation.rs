@@ -4,7 +4,7 @@ use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use std::collections::HashSet;
 
-use crate::types::{InteriorParticle, Zymase, Motor, INTERIOR_RADIUS, MAX_ATP, MOTOR_MEMBRANE_RADIUS, RESOURCE_RADIUS, MRNA_COUNT, CAPACITY_SCALE, MIN_RADIUS};
+use crate::types::{InteriorParticle, Zymase, Motor, Nucleus, INTERIOR_RADIUS, MAX_ATP, MOTOR_MEMBRANE_RADIUS, RESOURCE_RADIUS, MRNA_COUNT, CAPACITY_SCALE, MIN_RADIUS};
 use crate::crafting::{self, CraftOutput};
 use crate::interior;
 use crate::rules::{self, Rule};
@@ -116,6 +116,27 @@ pub struct Simulation {
     motor_count: i32,
     dragged_motor_index: Option<usize>,
     dragged_mrna_index: Option<usize>,
+
+    nuclei: Vec<Nucleus>,
+    nucleus_unlocked: bool,
+    #[var]
+    nucleus_count: i32,
+    #[var]
+    nucleus_xs: PackedFloat32Array,
+    #[var]
+    nucleus_ys: PackedFloat32Array,
+    #[var]
+    nucleus_target_types: PackedInt32Array,
+    #[var]
+    nucleus_progress: PackedInt32Array,
+    #[var]
+    nucleus_required: PackedInt32Array,
+    #[var]
+    nucleus_processing_flags: PackedInt32Array,
+    #[var]
+    nucleus_timers: PackedFloat32Array,
+    #[var]
+    nucleus_unlocked_flag: bool,
 
     #[var]
     zymase_interior_radius: f32,
@@ -295,6 +316,18 @@ impl INode for Simulation {
             dragged_motor_index: None,
             dragged_mrna_index: None,
 
+            nuclei: Vec::new(),
+            nucleus_unlocked: false,
+            nucleus_count: 0,
+            nucleus_xs: PackedFloat32Array::new(),
+            nucleus_ys: PackedFloat32Array::new(),
+            nucleus_target_types: PackedInt32Array::new(),
+            nucleus_progress: PackedInt32Array::new(),
+            nucleus_required: PackedInt32Array::new(),
+            nucleus_processing_flags: PackedInt32Array::new(),
+            nucleus_timers: PackedFloat32Array::new(),
+            nucleus_unlocked_flag: false,
+
             zymase_interior_radius: ZYMASE_RADIUS,
             motor_interior_x: MOTOR_ANGLE.cos() * INTERIOR_RADIUS,
             motor_interior_y: MOTOR_ANGLE.sin() * INTERIOR_RADIUS,
@@ -427,6 +460,43 @@ impl Simulation {
             self.zymase_timers.push(e.timer);
         }
         self.zymase_count = self.zymases.len() as i32;
+    }
+
+    fn sync_nucleus_arrays(&mut self) {
+        if self.nuclei.is_empty() {
+            self.nucleus_count = 0;
+            self.nucleus_unlocked_flag = self.nucleus_unlocked;
+            return;
+        }
+
+        self.nucleus_xs = PackedFloat32Array::new();
+        self.nucleus_ys = PackedFloat32Array::new();
+        self.nucleus_target_types = PackedInt32Array::new();
+        self.nucleus_progress = PackedInt32Array::new();
+        self.nucleus_required = PackedInt32Array::new();
+        self.nucleus_processing_flags = PackedInt32Array::new();
+        self.nucleus_timers = PackedFloat32Array::new();
+
+        for n in &self.nuclei {
+            self.nucleus_xs.push(n.x);
+            self.nucleus_ys.push(n.y);
+            self.nucleus_target_types.push(n.target_type);
+            self.nucleus_progress.push(n.progress);
+            self.nucleus_required.push(crafting::MRNA_REQUIRED[n.target_type.clamp(0, 2) as usize]);
+            self.nucleus_processing_flags.push(if n.processing { 1 } else { 0 });
+            self.nucleus_timers.push(n.timer);
+        }
+        self.nucleus_count = self.nuclei.len() as i32;
+        self.nucleus_unlocked_flag = self.nucleus_unlocked;
+    }
+
+    #[func]
+    fn cycle_nucleus_target(&mut self, index: i32) {
+        let idx = index as usize;
+        if idx < self.nuclei.len() && !self.nuclei[idx].processing {
+            self.nuclei[idx].target_type = (self.nuclei[idx].target_type + 1) % 3;
+            self.nuclei[idx].progress = 0;
+        }
     }
 
     #[func]
@@ -801,6 +871,7 @@ impl Simulation {
                 self.dragged_particle_index,
                 &mut self.player_glucose,
                 &self.current_suppressions,
+                &mut self.nuclei,
             );
 
             // Remove consumed particles in reverse order (swap_remove safe)
@@ -894,15 +965,63 @@ impl Simulation {
         self.sync_crafting_state();
         self.sync_rule_arrays();
 
-        tech::tick_techs(&mut self.techs, &mut self.rules);
+        let tech_ctx = tech::TechContext { max_nucleotide: max_nucleotide };
+        tech::tick_techs(&mut self.techs, &mut self.rules, &tech_ctx);
 
         // Grant sensor when Chemoreceptor tech completes
         if self.sensor_count == 0 {
-            if self.techs.iter().any(|t| t.name == "Chemoreceptor" && t.completed) {
+            if self.techs.get(4).map_or(false, |t| t.completed) {
                 self.sensor_count = 1;
             }
         }
 
+        // Unlock nucleus when Programmable Nucleus tech completes
+        if !self.nucleus_unlocked {
+            if self.techs.get(5).map_or(false, |t| t.completed) {
+                self.nucleus_unlocked = true;
+                let nx = crafting::NUCLEUS_ANGLE.cos() * MRNA_DIST;
+                let ny = crafting::NUCLEUS_ANGLE.sin() * MRNA_DIST;
+                self.nuclei.push(Nucleus {
+                    x: nx,
+                    y: ny,
+                    target_type: 0,
+                    progress: 0,
+                    processing: false,
+                    timer: 0.0,
+                });
+            }
+        }
+
+        // Nucleus timed crafting
+        let nucleus_outputs = crafting::tick_nuclei(&mut self.nuclei, dt);
+        for output in nucleus_outputs {
+            match output {
+                CraftOutput::SpawnZymase { x, y } => {
+                    self.zymases.push(Zymase {
+                        x,
+                        y,
+                        buffer: 0,
+                        processing: false,
+                        timer: 0.0,
+                    });
+                }
+                CraftOutput::SpawnMotor { angle } => {
+                    self.motors.push(Motor {
+                        x: angle.cos() * MOTOR_MEMBRANE_RADIUS,
+                        y: angle.sin() * MOTOR_MEMBRANE_RADIUS,
+                        charge: 0.0,
+                    });
+                }
+                CraftOutput::GrowCell => {
+                    self.expansion_count += 1;
+                    self.player_radius =
+                        MIN_RADIUS + crafting::GROWTH_SCALE * (self.expansion_count as f32).sqrt();
+                }
+                _ => {}
+            }
+        }
+
+        self.sync_nucleus_arrays();
         self.sync_tech_arrays();
         self.sync_autonomy_state();
     }
@@ -1224,6 +1343,11 @@ impl Simulation {
                 self.interior_particles.swap_remove(idx);
                 crafting::feed_motor(&mut self.motors[mi]);
             }
+        } else if p_type == 3 {
+            if let Some(ni) = crafting::find_nucleus_target(x, y, &self.nuclei) {
+                self.interior_particles.swap_remove(idx);
+                crafting::feed_nucleus(&mut self.nuclei[ni]);
+            }
         }
 
         // Clear drag state
@@ -1422,6 +1546,10 @@ impl Simulation {
             y: MOTOR_ANGLE.sin() * MOTOR_MEMBRANE_RADIUS,
             charge: STARTING_ATP,
         }];
+
+        // Reset nuclei
+        self.nuclei.clear();
+        self.nucleus_unlocked = false;
 
         // Reset autonomy
         self.autonomous_mode = false;
